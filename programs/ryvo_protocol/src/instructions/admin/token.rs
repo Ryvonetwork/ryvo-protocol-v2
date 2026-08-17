@@ -22,9 +22,9 @@ pub struct RegisterToken<'info> {
         bump = config.bump,
         has_one = authority,
     )]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: Box<Account<'info, Mint>>,
 
     #[account(
         init,
@@ -33,7 +33,7 @@ pub struct RegisterToken<'info> {
         seeds = [TOKEN_CONFIG_SEED.as_bytes(), mint.key().as_ref()],
         bump,
     )]
-    pub token_config: Account<'info, TokenConfig>,
+    pub token_config: Box<Account<'info, TokenConfig>>,
 
     /// Vault authority is `token_config`, per mint rather than the global `Config`, so a
     /// signer-seed mistake for one mint cannot reach another mint's vault.
@@ -45,7 +45,7 @@ pub struct RegisterToken<'info> {
         token::mint = mint,
         token::authority = token_config,
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
@@ -85,14 +85,14 @@ pub struct SetTokenEnabled<'info> {
         bump = config.bump,
         has_one = authority,
     )]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
 
     #[account(
         mut,
         seeds = [TOKEN_CONFIG_SEED.as_bytes(), token_config.mint.as_ref()],
         bump = token_config.bump,
     )]
-    pub token_config: Account<'info, TokenConfig>,
+    pub token_config: Box<Account<'info, TokenConfig>>,
 }
 
 /// Gates *entry* only. Callers must never consult this flag on a withdrawal, an unlock, or
@@ -122,9 +122,9 @@ pub struct WithdrawProtocolFees<'info> {
         bump = config.bump,
         has_one = authority,
     )]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: Box<Account<'info, Mint>>,
 
     #[account(
         mut,
@@ -133,17 +133,17 @@ pub struct WithdrawProtocolFees<'info> {
         has_one = mint,
         has_one = vault,
     )]
-    pub token_config: Account<'info, TokenConfig>,
+    pub token_config: Box<Account<'info, TokenConfig>>,
 
     #[account(mut)]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         token::mint = mint,
         constraint = destination.owner == config.fee_recipient @ RyvoError::InvalidFeeRecipient,
     )]
-    pub destination: Account<'info, TokenAccount>,
+    pub destination: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
 }

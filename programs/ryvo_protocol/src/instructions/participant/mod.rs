@@ -19,7 +19,7 @@ pub struct InitializeParticipant<'info> {
         seeds = [PARTICIPANT_SEED.as_bytes(), owner.key().as_ref()],
         bump,
     )]
-    pub participant: Account<'info, Participant>,
+    pub participant: Box<Account<'info, Participant>>,
 
     pub system_program: Program<'info, System>,
 }
@@ -50,7 +50,7 @@ pub struct UpdateInboundChannelPolicy<'info> {
         bump = participant.bump,
         has_one = owner,
     )]
-    pub participant: Account<'info, Participant>,
+    pub participant: Box<Account<'info, Participant>>,
 }
 
 pub fn update_inbound_channel_policy_handler(

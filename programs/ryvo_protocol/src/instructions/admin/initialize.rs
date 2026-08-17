@@ -20,7 +20,7 @@ pub struct Initialize<'info> {
         seeds = [CONFIG_SEED.as_bytes()],
         bump,
     )]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
 
     /// Gates initialization on the program's upgrade authority.
     ///
@@ -32,7 +32,7 @@ pub struct Initialize<'info> {
         bump,
         seeds::program = anchor_lang::solana_program::bpf_loader_upgradeable::ID,
     )]
-    pub program_data: Account<'info, ProgramData>,
+    pub program_data: Box<Account<'info, ProgramData>>,
 
     pub system_program: Program<'info, System>,
 }

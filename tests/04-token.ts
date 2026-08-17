@@ -17,13 +17,13 @@ import {
   newMint,
   protocolAuthority,
   protocolFeeRecipient,
+  setupProvider,
   seeds,
 } from "./shared";
 
 describe("ryvo_protocol / step 4: token registration and vault", () => {
-  anchor.setProvider(anchor.AnchorProvider.env());
+  const provider = setupProvider();
   const program = anchor.workspace.RyvoProtocol as Program<RyvoProtocol>;
-  const provider = anchor.getProvider() as anchor.AnchorProvider;
 
   const authority = protocolAuthority();
   const feeRecipient = protocolFeeRecipient();

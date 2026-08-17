@@ -17,6 +17,27 @@ export const FEE_BPS = 30;
 export const CHAIN_ID = 0; // localnet
 
 /**
+ * Provider pinned to `confirmed`.
+ *
+ * Anchor's default options use `processed`, so `.rpc()` resolves before a subsequent account read
+ * can observe the write. That produced reads that lagged writes by one deposit — the kind of
+ * flake that looks like a protocol bug. Every test file must use this.
+ */
+export function setupProvider(): anchor.AnchorProvider {
+  const base = anchor.AnchorProvider.env();
+  const connection = new anchor.web3.Connection(
+    process.env.ANCHOR_PROVIDER_URL ?? "http://127.0.0.1:8899",
+    "confirmed",
+  );
+  const provider = new anchor.AnchorProvider(connection, base.wallet, {
+    commitment: "confirmed",
+    preflightCommitment: "confirmed",
+  });
+  anchor.setProvider(provider);
+  return provider;
+}
+
+/**
  * Deterministic protocol authority shared by every test file.
  *
  * Test files run against one validator within a single `npm test`, so the authority must be

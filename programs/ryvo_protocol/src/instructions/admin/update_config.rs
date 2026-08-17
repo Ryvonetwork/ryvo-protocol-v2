@@ -16,7 +16,7 @@ pub struct UpdateConfig<'info> {
         bump = config.bump,
         has_one = authority,
     )]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
 }
 
 pub fn update_config_handler(
@@ -63,7 +63,7 @@ pub struct AcceptConfigAuthority<'info> {
         seeds = [CONFIG_SEED.as_bytes()],
         bump = config.bump,
     )]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
 }
 
 pub fn accept_config_authority_handler(ctx: Context<AcceptConfigAuthority>) -> Result<()> {

@@ -107,4 +107,29 @@ pub mod ryvo_protocol {
     ) -> Result<()> {
         instructions::participant::update_inbound_channel_policy_handler(ctx, policy)
     }
+
+    // --- balances ---
+
+    pub fn open_balance(ctx: Context<OpenBalance>) -> Result<()> {
+        instructions::balance::open_balance_handler(ctx)
+    }
+
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+        instructions::balance::deposit_handler(ctx, amount)
+    }
+
+    /// Record intent to withdraw. Moves no funds — see the handler docs.
+    pub fn request_withdrawal(ctx: Context<RequestWithdrawal>, amount: u64) -> Result<()> {
+        instructions::balance::request_withdrawal_handler(ctx, amount)
+    }
+
+    pub fn cancel_withdrawal(ctx: Context<CancelWithdrawal>) -> Result<()> {
+        instructions::balance::cancel_withdrawal_handler(ctx)
+    }
+
+    /// Permissionless crank. Pays `min(pending, available)` to the destination fixed at request
+    /// time, so a user who lost their signing key can still be exited.
+    pub fn execute_withdrawal(ctx: Context<ExecuteWithdrawal>) -> Result<()> {
+        instructions::balance::execute_withdrawal_handler(ctx)
+    }
 }

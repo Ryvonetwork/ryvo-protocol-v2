@@ -6,7 +6,12 @@ import { expect } from "chai";
 import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
-import { fund, protocolAuthority, protocolFeeRecipient } from "./shared";
+import {
+  fund,
+  protocolAuthority,
+  protocolFeeRecipient,
+  setupProvider,
+} from "./shared";
 
 const BPF_LOADER_UPGRADEABLE = new PublicKey(
   "BPFLoaderUpgradeab1e11111111111111111111111",
@@ -35,9 +40,8 @@ function localWallet(): Keypair {
 }
 
 describe("ryvo_protocol / step 3: config and authority", () => {
-  anchor.setProvider(anchor.AnchorProvider.env());
+  const provider = setupProvider();
   const program = anchor.workspace.RyvoProtocol as Program<RyvoProtocol>;
-  const provider = anchor.getProvider() as anchor.AnchorProvider;
 
   const upgradeAuthority = localWallet();
   const [configPda] = PublicKey.findProgramAddressSync(

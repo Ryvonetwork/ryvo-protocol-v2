@@ -2,6 +2,7 @@ import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import { expect } from "chai";
+import { setupProvider } from "./shared";
 
 /**
  * Step 0 smoke test.
@@ -15,7 +16,7 @@ import { expect } from "chai";
  * "account does not exist" bugs in this shape of program.
  */
 describe("ryvo_protocol / step 0: toolchain", () => {
-  anchor.setProvider(anchor.AnchorProvider.env());
+  const provider = setupProvider();
   const program = anchor.workspace.RyvoProtocol as Program<RyvoProtocol>;
 
   const normalize = (s: string) => s.replace(/_/g, "").toLowerCase();

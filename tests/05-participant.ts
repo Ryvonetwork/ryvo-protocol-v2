@@ -9,13 +9,13 @@ import {
   fund,
   protocolAuthority,
   protocolFeeRecipient,
+  setupProvider,
   seeds,
 } from "./shared";
 
 describe("ryvo_protocol / step 5: participants", () => {
-  anchor.setProvider(anchor.AnchorProvider.env());
+  const provider = setupProvider();
   const program = anchor.workspace.RyvoProtocol as Program<RyvoProtocol>;
-  const provider = anchor.getProvider() as anchor.AnchorProvider;
 
   const configPda = seeds.config(program.programId);
 
