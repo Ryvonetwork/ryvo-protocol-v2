@@ -55,8 +55,10 @@ describe("ryvo_protocol / step 0: toolchain", () => {
     for (const t of accounts) {
       if (normalize(t.name) === "config") continue; // singleton, checked separately in Rust
       const fields = (t.type as any).fields ?? [];
-      const reserved = fields.find((f: any) => f.name === "_reserved");
-      expect(reserved, `${t.name} has no _reserved field`).to.not.be.undefined;
+      // Anchor's TS layer camelCases IDL names and strips the leading underscore, so compare
+      // normalized.
+      const reserved = fields.find((f: any) => normalize(f.name) === "reserved");
+      expect(reserved, `${t.name} has no reserved field`).to.not.be.undefined;
     }
   });
 });

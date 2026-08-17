@@ -6,6 +6,7 @@ import { expect } from "chai";
 import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
+import { fund, protocolAuthority, protocolFeeRecipient } from "./shared";
 
 const BPF_LOADER_UPGRADEABLE = new PublicKey(
   "BPFLoaderUpgradeab1e11111111111111111111111",
@@ -53,8 +54,9 @@ describe("ryvo_protocol / step 3: config and authority", () => {
   const WITHDRAWAL_TIMELOCK = 1;
   const CHANNEL_TIMELOCK = 2;
 
-  const authority = Keypair.generate();
-  const feeRecipient = Keypair.generate();
+  // Deterministic so later test files can sign as the authority. See tests/shared.ts.
+  const authority = protocolAuthority();
+  const feeRecipient = protocolFeeRecipient();
   const successor = Keypair.generate();
 
   const init = (overrides: Partial<{
@@ -266,5 +268,29 @@ describe("ryvo_protocol / step 3: config and authority", () => {
       failed = true;
     }
     expect(failed, "the previous authority retained power").to.be.true;
+
+    // Restore the canonical authority, and the fee settings later files expect. Test files share
+    // one validator, so leaving authority with a throwaway key would break every later file.
+    await fund(provider, successor.publicKey, 2);
+    await program.methods
+      .updateConfig(null, null, authority.publicKey)
+      .accounts({ authority: successor.publicKey, config: configPda })
+      .signers([successor])
+      .rpc();
+    await program.methods
+      .acceptConfigAuthority()
+      .accounts({ pendingAuthority: authority.publicKey, config: configPda })
+      .signers([authority])
+      .rpc();
+    await program.methods
+      .updateConfig(feeRecipient.publicKey, FEE_BPS, null)
+      .accounts({ authority: authority.publicKey, config: configPda })
+      .signers([authority])
+      .rpc();
+
+    const restored = await program.account.config.fetch(configPda);
+    expect(restored.authority.toBase58()).to.equal(authority.publicKey.toBase58());
+    expect(restored.feeBps).to.equal(FEE_BPS);
+    expect(restored.feeRecipient.toBase58()).to.equal(feeRecipient.publicKey.toBase58());
   });
 });

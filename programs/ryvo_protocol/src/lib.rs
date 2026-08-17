@@ -78,4 +78,18 @@ pub mod ryvo_protocol {
     pub fn accept_config_authority(ctx: Context<AcceptConfigAuthority>) -> Result<()> {
         instructions::admin::update_config::accept_config_authority_handler(ctx)
     }
+
+    /// Allowlist a mint and create its vault. Legacy SPL Token only.
+    pub fn register_token(ctx: Context<RegisterToken>) -> Result<()> {
+        instructions::admin::token::register_token_handler(ctx)
+    }
+
+    /// Pause or resume *entry* for a mint: deposits, channel creation, locking. Never exits.
+    pub fn set_token_enabled(ctx: Context<SetTokenEnabled>, enabled: bool) -> Result<()> {
+        instructions::admin::token::set_token_enabled_handler(ctx, enabled)
+    }
+
+    pub fn withdraw_protocol_fees(ctx: Context<WithdrawProtocolFees>, amount: u64) -> Result<()> {
+        instructions::admin::token::withdraw_protocol_fees_handler(ctx, amount)
+    }
 }
