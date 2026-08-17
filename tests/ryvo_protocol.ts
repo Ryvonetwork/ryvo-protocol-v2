@@ -46,7 +46,17 @@ describe("ryvo_protocol / step 0: toolchain", () => {
     }
   });
 
-  it("has no instructions yet", () => {
-    expect(program.idl.instructions).to.have.length(0);
+  it("declares no account type without reserved growth room", () => {
+    // Every non-singleton account must carry reserved bytes so a v2 field addition never
+    // forces a realloc of accounts already holding live funds.
+    const accounts = program.idl.types.filter((t) =>
+      (program.idl.accounts ?? []).some((a) => a.name === t.name),
+    );
+    for (const t of accounts) {
+      if (normalize(t.name) === "config") continue; // singleton, checked separately in Rust
+      const fields = (t.type as any).fields ?? [];
+      const reserved = fields.find((f: any) => f.name === "_reserved");
+      expect(reserved, `${t.name} has no _reserved field`).to.not.be.undefined;
+    }
   });
 });

@@ -2,8 +2,7 @@
   "license": "ISC",
   "scripts": {
     "build": "anchor build",
-    "//test": "--validator legacy uses solana-test-validator; anchor 1.x defaults to surfpool, which is not installed here",
-    "test": "anchor test --validator legacy",
+    "test": "bash scripts/test.sh",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },

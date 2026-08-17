@@ -34,4 +34,48 @@ declare_id!("4kRnxdszLpHvrLzi4EDyyTRAWqkdmANzSGFPqncr2uxc");
 pub mod ryvo_protocol {
     #[allow(unused_imports)]
     use super::*;
+
+    // --- admin ---
+
+    /// Bootstrap the singleton config. Gated on the program upgrade authority, so the fixed-seed
+    /// `Config` account cannot be front-run by an unrelated caller.
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        chain_id: u16,
+        fee_bps: u16,
+        withdrawal_timelock_seconds: i64,
+        channel_timelock_seconds: i64,
+        initial_authority: Pubkey,
+        fee_recipient: Pubkey,
+    ) -> Result<()> {
+        instructions::admin::initialize::handler(
+            ctx,
+            chain_id,
+            fee_bps,
+            withdrawal_timelock_seconds,
+            channel_timelock_seconds,
+            initial_authority,
+            fee_recipient,
+        )
+    }
+
+    /// Update the mutable subset only. `chain_id`, `message_domain` and both timelocks are
+    /// deliberately unreachable from here.
+    pub fn update_config(
+        ctx: Context<UpdateConfig>,
+        new_fee_recipient: Option<Pubkey>,
+        new_fee_bps: Option<u16>,
+        new_pending_authority: Option<Pubkey>,
+    ) -> Result<()> {
+        instructions::admin::update_config::update_config_handler(
+            ctx,
+            new_fee_recipient,
+            new_fee_bps,
+            new_pending_authority,
+        )
+    }
+
+    pub fn accept_config_authority(ctx: Context<AcceptConfigAuthority>) -> Result<()> {
+        instructions::admin::update_config::accept_config_authority_handler(ctx)
+    }
 }
