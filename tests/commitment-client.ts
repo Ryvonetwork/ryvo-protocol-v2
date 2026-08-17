@@ -99,6 +99,82 @@ export function arcisPublicKey(seed: Uint8Array): Uint8Array {
   return arcisEd25519.getPublicKey(seed);
 }
 
+export const ARCIS_SIGNER_TAG = "ryvo-arcis-signer-v1";
+
+/**
+ * Derive a channel's signing seed from an agent's wallet seed.
+ *
+ * `SHA256(ARCIS_SIGNER_TAG || wallet_seed || channel || epoch_le)`
+ *
+ * Three properties, in the order they matter:
+ *
+ * 1. **One secret.** The agent backs up its wallet seed and nothing else; every signing key is
+ *    recomputed on demand, so there is no key material to store, sync or lose.
+ * 2. **Per-channel blast radius.** A leaked signing key authorises payments on exactly one
+ *    channel. It cannot be replayed onto another channel, and it does not expose the wallet seed
+ *    — SHA-256 is one-way, so the derivation cannot be run backwards.
+ * 3. **Rotation is a counter.** `epoch` matches the on-chain `Channel.signer_epoch`, so rotating
+ *    means bumping it and re-deriving. Because every commitment carries the epoch it was signed
+ *    under, commitments from a previous epoch stay dead even if the same key is later re-derived.
+ *
+ * Domain separation matters here: reusing the raw wallet seed directly under two different hash
+ * functions would work, but it is a non-standard construction and gives one key two lives. This
+ * costs one SHA-256 and avoids the question.
+ */
+export function deriveArcisSignerSeed(
+  walletSeed: Uint8Array,
+  channel: PublicKey,
+  epoch: number,
+): Buffer {
+  if (walletSeed.length !== 32) {
+    throw new Error(`wallet seed must be 32 bytes, got ${walletSeed.length}`);
+  }
+  const epochLe = Buffer.alloc(4);
+  epochLe.writeUInt32LE(epoch);
+  return createHash("sha256")
+    .update(
+      Buffer.concat([
+        Buffer.from(ARCIS_SIGNER_TAG),
+        Buffer.from(walletSeed),
+        channel.toBuffer(),
+        epochLe,
+      ]),
+    )
+    .digest();
+}
+
+export interface ArcisSigner {
+  /** Never leaves the agent. Recomputed on demand rather than stored. */
+  seed: Buffer;
+  /** The 32 bytes registered on-chain as `Channel.authorized_signer`. */
+  publicKey: Buffer;
+  epoch: number;
+}
+
+/** Derive the signer an agent should register for a channel, and sign with. */
+export function deriveArcisSigner(
+  walletSeed: Uint8Array,
+  channel: PublicKey,
+  epoch = 0,
+): ArcisSigner {
+  const seed = deriveArcisSignerSeed(walletSeed, channel, epoch);
+  return { seed, publicKey: Buffer.from(arcisEd25519.getPublicKey(seed)), epoch };
+}
+
+/** Sign a commitment for `channel` with the derived key for that channel and epoch. */
+export function signCommitment(
+  walletSeed: Uint8Array,
+  commitment: Commitment,
+): { signature: Buffer; publicKey: Buffer; digest: Buffer } {
+  const signer = deriveArcisSigner(walletSeed, commitment.channel, commitment.signerEpoch);
+  const digest = commitmentDigest(commitment);
+  return {
+    signature: Buffer.from(arcisSign(digest, signer.seed)),
+    publicKey: signer.publicKey,
+    digest,
+  };
+}
+
 export function arcisSign(digest: Uint8Array, seed: Uint8Array): Uint8Array {
   return arcisEd25519.sign(digest, seed);
 }

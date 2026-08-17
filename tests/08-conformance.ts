@@ -18,8 +18,10 @@ import {
   arcisVerify,
   commitmentDigest,
   decodeCommitment,
+  deriveArcisSigner,
   deriveMessageDomain,
   encodeCommitment,
+  signCommitment,
   standardEd25519,
 } from "./commitment-client";
 import {
@@ -188,6 +190,78 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     const sig = arcisSign(digest, seed);
     expect(arcisVerify(sig, digest, arcisPub)).to.be.true;
     expect(arcisVerify(sig, digest, wallet.publicKey.toBytes())).to.be.false;
+  });
+
+  // ------------------------------------------------------- derived signers
+
+  describe("derived channel signers", () => {
+    const walletSeed = () => Keypair.generate().secretKey.slice(0, 32);
+    const channelA = Keypair.generate().publicKey;
+    const channelB = Keypair.generate().publicKey;
+
+    it("is deterministic, so an agent stores one secret and recomputes the rest", () => {
+      const seed = walletSeed();
+      const a = deriveArcisSigner(seed, channelA, 0);
+      const b = deriveArcisSigner(seed, channelA, 0);
+      expect(a.seed.toString("hex")).to.equal(b.seed.toString("hex"));
+      expect(a.publicKey.toString("hex")).to.equal(b.publicKey.toString("hex"));
+    });
+
+    it("gives a different key per channel, limiting blast radius to one channel", () => {
+      const seed = walletSeed();
+      expect(deriveArcisSigner(seed, channelA, 0).publicKey.toString("hex")).to.not.equal(
+        deriveArcisSigner(seed, channelB, 0).publicKey.toString("hex"),
+      );
+    });
+
+    it("gives a different key per epoch, so rotation is a counter bump", () => {
+      const seed = walletSeed();
+      expect(deriveArcisSigner(seed, channelA, 0).publicKey.toString("hex")).to.not.equal(
+        deriveArcisSigner(seed, channelA, 1).publicKey.toString("hex"),
+      );
+    });
+
+    it("gives a different key per wallet", () => {
+      expect(deriveArcisSigner(walletSeed(), channelA, 0).publicKey.toString("hex")).to.not.equal(
+        deriveArcisSigner(walletSeed(), channelA, 0).publicKey.toString("hex"),
+      );
+    });
+
+    it("never equals the wallet address", () => {
+      const wallet = Keypair.generate();
+      const signer = deriveArcisSigner(wallet.secretKey.slice(0, 32), channelA, 0);
+      expect(signer.publicKey.toString("hex")).to.not.equal(
+        Buffer.from(wallet.publicKey.toBytes()).toString("hex"),
+      );
+    });
+
+    it("rejects a wallet seed of the wrong length rather than silently truncating", () => {
+      expect(() => deriveArcisSigner(new Uint8Array(64), channelA, 0)).to.throw(/32 bytes/);
+    });
+
+    it("signs a commitment that verifies under the registered signer, and only that one", () => {
+      const wallet = Keypair.generate();
+      const seed = wallet.secretKey.slice(0, 32);
+      const commitment = {
+        messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
+        channel: channelA,
+        targetCumulative: 500_000n,
+        signerEpoch: 0,
+        expiryUnix: 0n,
+      };
+
+      const { signature, publicKey, digest } = signCommitment(seed, commitment);
+      expect(arcisVerify(signature, digest, publicKey)).to.be.true;
+
+      // A commitment signed at epoch 0 must not verify under the epoch-1 key. This is what makes
+      // rotation an actual revocation rather than a relabelling.
+      const nextEpoch = deriveArcisSigner(seed, channelA, 1);
+      expect(arcisVerify(signature, digest, nextEpoch.publicKey)).to.be.false;
+
+      // Nor under the key for a different channel.
+      const otherChannel = deriveArcisSigner(seed, channelB, 0);
+      expect(arcisVerify(signature, digest, otherChannel.publicKey)).to.be.false;
+    });
   });
 
   // -------------------------------------------------------- solvency property

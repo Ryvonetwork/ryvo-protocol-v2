@@ -9,6 +9,7 @@ import {
 } from "@solana/spl-token";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import { expect } from "chai";
+import { deriveArcisSigner } from "./commitment-client";
 import {
   CHANNEL_TIMELOCK,
   ensureConfig,
@@ -182,10 +183,13 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   });
 
   it("creates a channel under the permissionless policy with no payee signature", async () => {
-    const signingKey = Keypair.generate().publicKey;
+    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    // The real pattern: derive the signer for this channel from the agent's wallet seed at
+    // epoch 0, rather than registering an arbitrary throwaway key.
+    const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32), channel, 0);
+    const signingKey = new PublicKey(signer.publicKey);
     await createChannel(payer, payee, signingKey, null).rpc();
 
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
     const c = await program.account.channel.fetch(channel);
     expect(c.payer.toBase58()).to.equal(payer.participant.toBase58());
     expect(c.payee.toBase58()).to.equal(payee.participant.toBase58());
@@ -193,8 +197,14 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     expect(c.authorizedSigner.toBase58()).to.equal(signingKey.toBase58());
     expect(c.settledCumulative.toNumber()).to.equal(0);
     expect(c.lockedBalance.toNumber()).to.equal(0);
-    expect(c.signerEpoch).to.equal(0);
     expect(c.pendingAuthorizedSigner.toBase58()).to.equal(PublicKey.default.toBase58());
+
+    // The stored epoch must match the epoch the signer was derived at, or the agent would sign
+    // under a key the settlement path will not accept.
+    expect(c.signerEpoch).to.equal(signer.epoch);
+
+    // And the registered signer is NOT the agent's wallet address.
+    expect(c.authorizedSigner.toBase58()).to.not.equal(payer.owner.publicKey.toBase58());
   });
 
   it("refuses a duplicate channel but allows the reverse direction", async () => {
