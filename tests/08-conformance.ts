@@ -155,22 +155,39 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     ).to.be.false;
   });
 
-  it("documents that one seed yields DIFFERENT pubkeys under the two schemes", () => {
-    // Ed25519 derives the secret scalar by hashing the seed, so replacing SHA-512 with SHA3-512
-    // changes the derived pubkey as well as the signature. Consequence: a channel's
-    // authorized_signer must be the ArcisEd25519-derived pubkey, NOT the agent's wallet address.
+  it("proves a Solana wallet pubkey can never be a channel authorized_signer", () => {
+    // Verified against @arcium-hq/client itself, not a local model of it. Upstream builds the
+    // scheme as twistedEdwards({ ...ed25519, hash: sha3_512 }), and that single hash parameter
+    // governs key derivation too: Ed25519 derives its scalar as clamp(hash(seed)[0..32]).
     //
-    // Whether Arcium's own ArcisEd25519 derives keys the same way, or keeps RFC 8032 key
-    // derivation and swaps only the challenge hash, is UNVERIFIED here and must be confirmed
-    // against the real MPC before mainnet. It decides whether a wallet pubkey can ever be a
-    // valid authorized_signer.
-    const seed = standardEd25519.utils.randomSecretKey();
+    // So one seed gives an agent two different identities. The wallet address is NOT usable as
+    // authorized_signer — which is exactly why create_channel requires the signer explicitly
+    // rather than defaulting to the payer's wallet.
+    const wallet = Keypair.generate();
+    const seed = wallet.secretKey.slice(0, 32); // Solana stores seed || pubkey
+
+    // Sanity: the seed really is the wallet's.
+    expect(Buffer.from(standardEd25519.getPublicKey(seed)).toString("hex")).to.equal(
+      Buffer.from(wallet.publicKey.toBytes()).toString("hex"),
+    );
+
+    const arcisPub = arcisPublicKey(seed);
     expect(
-      Buffer.from(arcisPublicKey(seed)).equals(
-        Buffer.from(standardEd25519.getPublicKey(seed)),
-      ),
-      "if this ever passes, revisit the authorized_signer guidance",
+      Buffer.from(arcisPub).equals(Buffer.from(wallet.publicKey.toBytes())),
+      "if this ever passes, wallet keys became usable and the guidance should change",
     ).to.be.false;
+
+    // And a signature made with that seed verifies only under the Arcis pubkey.
+    const digest = commitmentDigest({
+      messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
+      channel: seeds.config(program.programId),
+      targetCumulative: 7n,
+      signerEpoch: 0,
+      expiryUnix: 0n,
+    });
+    const sig = arcisSign(digest, seed);
+    expect(arcisVerify(sig, digest, arcisPub)).to.be.true;
+    expect(arcisVerify(sig, digest, wallet.publicKey.toBytes())).to.be.false;
   });
 
   // -------------------------------------------------------- solvency property

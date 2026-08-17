@@ -8,8 +8,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { createHash } from "crypto";
 import { ed25519 } from "@noble/curves/ed25519";
-import { eddsa } from "@noble/curves/abstract/edwards";
-import { sha3_512 } from "@noble/hashes/sha3";
+import { arcisEd25519 as arcisEd25519Upstream } from "@arcium-hq/client";
 
 export const KIND_UNILATERAL_COMMITMENT = 0x01;
 export const VERSION = 0x01;
@@ -77,19 +76,24 @@ export function decodeCommitment(bytes: Buffer): Commitment {
 }
 
 /**
- * ArcisEd25519: the same twisted-Edwards curve as Ed25519, with SHA3-512 in place of SHA-512.
+ * ArcisEd25519, re-exported from `@arcium-hq/client` rather than reconstructed here.
  *
- * Arcium uses SHA3-512 because it is far cheaper inside MPC. The consequence is that signature
- * bytes are NOT interchangeable with RFC 8032 — a wallet signature is rejected in-MPC, which was
- * confirmed empirically in the prior devnet POC.
+ * Upstream builds it as `twistedEdwards({ ...ed25519 params, hash: sha3_512 })` — SHA3-512 has a
+ * much lower multiplicative depth, which is what makes verification affordable inside MPC.
  *
- * CAUTION — see `08-conformance.ts`: because Ed25519 derives the secret scalar by hashing the
- * seed, changing that hash also changes the derived public key. So the same 32-byte seed yields a
- * DIFFERENT pubkey under this scheme than under standard Ed25519. Whatever key an agent registers
- * as a channel's `authorized_signer` must be the ArcisEd25519-derived pubkey, not its Solana
- * wallet address.
+ * Two consequences, both verified against this exact library:
+ *
+ * 1. Signature bytes are NOT interchangeable with RFC 8032. A wallet signature is rejected
+ *    in-MPC, as the prior devnet POC also confirmed end to end.
+ * 2. `hash` is a single parameter feeding the whole scheme, key derivation included. Ed25519
+ *    derives its secret scalar as `clamp(hash(seed)[0..32])`, so one seed yields a DIFFERENT
+ *    public key here than under standard Ed25519 — which means an agent's Solana wallet address
+ *    can never be a channel's `authorized_signer`. Register the ArcisEd25519 pubkey.
+ *
+ * Using upstream directly means a change to their scheme breaks our conformance tests instead of
+ * silently diverging from a local model of it.
  */
-export const arcisEd25519 = eddsa(ed25519.Point, sha3_512);
+export const arcisEd25519 = arcisEd25519Upstream;
 
 export function arcisPublicKey(seed: Uint8Array): Uint8Array {
   return arcisEd25519.getPublicKey(seed);
