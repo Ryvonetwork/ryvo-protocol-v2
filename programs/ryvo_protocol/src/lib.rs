@@ -6,13 +6,17 @@
 //! that landing v2 requires neither a state migration nor re-signing live commitments.
 
 pub mod constants;
+pub mod domain;
 pub mod error;
+pub mod events;
 pub mod instructions;
 pub mod state;
 
 use anchor_lang::prelude::*;
 
 pub use constants::*;
+#[allow(unused_imports)]
+pub use events::*;
 #[allow(unused_imports)]
 pub use instructions::*;
 #[allow(unused_imports)]
