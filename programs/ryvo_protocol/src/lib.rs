@@ -5,6 +5,7 @@
 //! commitments are verified through Arcium MPC in v2; `commitment.rs` fixes the format now so
 //! that landing v2 requires neither a state migration nor re-signing live commitments.
 
+pub mod commitment;
 pub mod constants;
 pub mod domain;
 pub mod error;
