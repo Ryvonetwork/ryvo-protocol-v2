@@ -92,4 +92,19 @@ pub mod ryvo_protocol {
     pub fn withdraw_protocol_fees(ctx: Context<WithdrawProtocolFees>, amount: u64) -> Result<()> {
         instructions::admin::token::withdraw_protocol_fees_handler(ctx, amount)
     }
+
+    // --- participants ---
+
+    /// Register a permanent identity. Never recycled: the PDA derives from the owner and there is
+    /// no close instruction.
+    pub fn initialize_participant(ctx: Context<InitializeParticipant>) -> Result<()> {
+        instructions::participant::initialize_participant_handler(ctx)
+    }
+
+    pub fn update_inbound_channel_policy(
+        ctx: Context<UpdateInboundChannelPolicy>,
+        policy: InboundChannelPolicy,
+    ) -> Result<()> {
+        instructions::participant::update_inbound_channel_policy_handler(ctx, policy)
+    }
 }
