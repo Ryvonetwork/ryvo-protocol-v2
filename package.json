@@ -1,6 +1,9 @@
 {
   "license": "ISC",
   "scripts": {
+    "build": "anchor build",
+    "//test": "--validator legacy uses solana-test-validator; anchor 1.x defaults to surfpool, which is not installed here",
+    "test": "anchor test --validator legacy",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
@@ -9,6 +12,7 @@
     "@anchor-lang/core": "^1.0.2"
   },
   "devDependencies": {
+    "@solana/spl-token": "^0.4.9",
     "chai": "^4.3.4",
     "mocha": "^9.0.3",
     "ts-mocha": "^10.0.0",

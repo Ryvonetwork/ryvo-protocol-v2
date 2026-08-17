@@ -1,7 +1,7 @@
 [package]
 name = "ryvo_protocol"
 version = "0.1.0"
-description = "Created with Arcium & Anchor"
+description = "Ryvo protocol: unilateral cumulative payment channels on Solana"
 edition = "2021"
 
 [lib]
@@ -14,16 +14,31 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build", "arcium-anchor/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
 
 [dependencies]
-anchor-lang = { version = "1.0.2", features = ["init-if-needed"] }
-arcium-client = { default-features = false, version = "=0.14.1" }
-arcium-macros = "=0.14.1"
-arcium-anchor = "=0.14.1"
+# NOTE: `init-if-needed` is deliberately NOT enabled. Every account is created by an
+# explicit instruction so that account creation can never be an implicit side effect of
+# a money-moving instruction.
+anchor-lang = "1.0.2"
+# The program is legacy-SPL-Token-only. That guarantee is enforced by
+# `Program<'info, Token>` on every token-touching instruction, which pins the token program
+# to the legacy SPL Token address and therefore rejects token-2022 mints — whose transfer
+# fees, transfer hooks and confidential transfers would each break the solvency invariant
+# `vault.amount == sum(available) + sum(locked) + accrued_fees`. We use `anchor_spl::token`
+# types exclusively and never `token_interface`.
+#
+# `token_2022` is enabled only because anchor-spl 1.0.2's `idl_build.rs` references
+# `crate::token_interface` unconditionally, so `anchor-spl/idl-build` — which the `Accounts`
+# derive needs for `insert_types` on `Mint`/`TokenAccount` — fails to compile without it.
+# It widens the dependency tree, not the set of mints the program accepts.
+anchor-spl = { version = "1.0.2", default-features = false, features = [
+    "token",
+    "token_2022",
+] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
