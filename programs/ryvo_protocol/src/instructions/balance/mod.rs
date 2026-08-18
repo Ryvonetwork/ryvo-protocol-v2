@@ -1,9 +1,7 @@
-use crate::constants::{
-    BALANCE_SEED, CONFIG_SEED, PARTICIPANT_SEED, TOKEN_CONFIG_SEED, VAULT_SEED,
-};
+use crate::constants::{BALANCE_SEED, PARTICIPANT_SEED, TOKEN_CONFIG_SEED, VAULT_SEED};
 use crate::error::RyvoError;
 use crate::events::{BalanceOpened, Deposited, Withdrawn};
-use crate::state::{Balance, Config, Participant, TokenConfig};
+use crate::state::{Balance, Participant, TokenConfig};
 use anchor_lang::prelude::*;
 use anchor_spl::token::{transfer_checked, Mint, Token, TokenAccount, TransferChecked};
 
@@ -152,17 +150,11 @@ pub fn deposit_handler(ctx: Context<Deposit>, amount: u64) -> Result<()> {
 /// only from the channel's `locked_balance`, so free balance is free in the literal sense and no
 /// counterparty has a claim on it that a delay would need to protect.
 ///
-/// Note `enabled` is deliberately not checked. Disabling a mint stops deposits and new channel
-/// funding; it must never block an exit, or it would be a fund-freeze switch.
+/// Note `deposits_enabled` is deliberately not checked. Pausing a mint stops intake; it must never
+/// block an exit, or it would be a fund-freeze switch.
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
     pub owner: Signer<'info>,
-
-    #[account(
-        seeds = [CONFIG_SEED.as_bytes()],
-        bump = config.bump,
-    )]
-    pub config: Box<Account<'info, Config>>,
 
     #[account(
         seeds = [PARTICIPANT_SEED.as_bytes(), owner.key().as_ref()],
@@ -173,8 +165,11 @@ pub struct Withdraw<'info> {
 
     pub mint: Box<Account<'info, Mint>>,
 
+    /// Read-only, and that matters. This account is the vault's signing authority and the source
+    /// of `decimals`, but nothing here writes it. Marking it `mut` would take a *write* lock,
+    /// which serialises every withdrawal of the same mint against every other — a throughput
+    /// ceiling bought for nothing, since read locks are shared.
     #[account(
-        mut,
         seeds = [TOKEN_CONFIG_SEED.as_bytes(), mint.key().as_ref()],
         bump = token_config.bump,
         has_one = mint,

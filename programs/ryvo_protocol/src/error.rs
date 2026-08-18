@@ -25,8 +25,6 @@ pub enum RyvoError {
     InvalidTokenDecimals,
     #[msg("Deposits are disabled for this token")]
     TokenDepositsDisabled,
-    #[msg("Token mint does not match the account it was passed with")]
-    InvalidTokenMint,
 
     // --- balance / withdrawal ---
     #[msg("Amount must be greater than zero")]

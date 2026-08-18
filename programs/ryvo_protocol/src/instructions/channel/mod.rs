@@ -30,7 +30,6 @@ pub struct CreateChannel<'info> {
     #[account(
         seeds = [PARTICIPANT_SEED.as_bytes(), payer_owner.key().as_ref()],
         bump = payer_participant.bump,
-        constraint = payer_participant.owner == payer_owner.key() @ RyvoError::InvalidAuthorizedSigner,
     )]
     pub payer_participant: Box<Account<'info, Participant>>,
 

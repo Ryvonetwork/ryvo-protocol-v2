@@ -416,7 +416,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           await program.methods
             .withdraw(new anchor.BN(1 + rand(Number(b.available))))
             .accounts({
-              owner: p.owner.publicKey, config: configPda, participant: p.participant,
+              owner: p.owner.publicKey, participant: p.participant,
               mint: m, tokenConfig: tokenConfigs.get(mk)!, vault: vaults.get(mk)!,
               balance: bal, destination: p.atas.get(mk)!, tokenProgram: TOKEN_PROGRAM_ID,
             })

@@ -272,7 +272,7 @@ describe("ryvo_protocol devnet smoke", function () {
     await program.methods
       .withdraw(new anchor.BN(50 * ONE))
       .accounts({
-        owner: payerParty.owner.publicKey, config: pda.config(),
+        owner: payerParty.owner.publicKey,
         participant: payerParty.participant, mint,
         tokenConfig: pda.tokenConfig(mint), vault: pda.vault(mint),
         balance: payerParty.balance, destination: payerParty.ata,

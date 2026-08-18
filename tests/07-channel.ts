@@ -247,7 +247,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
       program.methods
         .withdraw(new anchor.BN(b.available.toNumber() + 1))
         .accounts({
-          owner: payer.owner.publicKey, config: configPda, participant: payer.participant,
+          owner: payer.owner.publicKey, participant: payer.participant,
           mint, tokenConfig, vault, balance: payer.balance, destination: ata,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
