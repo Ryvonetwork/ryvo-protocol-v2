@@ -209,7 +209,7 @@ describe("ryvo_protocol devnet smoke", function () {
 
   it("opens a channel whose signer is derived, not the wallet address", async () => {
     channel = pda.channel(payerParty.participant, payeeParty.participant, mint);
-    const signer = deriveArcisSigner(payerParty.owner.secretKey.slice(0, 32), channel, 0);
+    const signer = deriveArcisSigner(payerParty.owner.secretKey.slice(0, 32), channel);
 
     await program.methods
       .createChannel(new PublicKey(signer.publicKey))
@@ -229,7 +229,6 @@ describe("ryvo_protocol devnet smoke", function () {
     const c = await program.account.channel.fetch(channel);
     expect(c.authorizedSigner.toBase58()).to.equal(new PublicKey(signer.publicKey).toBase58());
     expect(c.authorizedSigner.toBase58()).to.not.equal(payerParty.owner.publicKey.toBase58());
-    expect(c.signerEpoch).to.equal(0);
     console.log("    channel:", channel.toBase58());
     console.log("    authorized_signer:", c.authorizedSigner.toBase58());
     console.log("    payer wallet:      ", payerParty.owner.publicKey.toBase58());

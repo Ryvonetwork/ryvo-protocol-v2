@@ -64,15 +64,13 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         messageDomain: Buffer.from(v.messageDomain, "hex"),
         channel: new PublicKey(v.channel),
         targetCumulative: BigInt(v.targetCumulative),
-        signerEpoch: v.signerEpoch,
-        expiryUnix: BigInt(v.expiryUnix),
+          expiryUnix: BigInt(v.expiryUnix),
       };
       expect(encodeCommitment(c).toString("hex"), `encode mismatch: ${v.name}`).to.equal(v.encoded);
       expect(commitmentDigest(c).toString("hex"), `digest mismatch: ${v.name}`).to.equal(v.digest);
       // Round-trip through the decoder too.
       const back = decodeCommitment(Buffer.from(v.encoded, "hex"));
       expect(back.targetCumulative).to.equal(c.targetCumulative);
-      expect(back.signerEpoch).to.equal(c.signerEpoch);
       expect(back.channel.toBase58()).to.equal(c.channel.toBase58());
     }
   });
@@ -98,7 +96,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
 
   it("rejects malformed canonical messages", () => {
     const good = Buffer.from(vectors.commitments[0].encoded, "hex");
-    expect(() => decodeCommitment(good.subarray(0, 69))).to.throw();
+    expect(() => decodeCommitment(good.subarray(0, CANONICAL_LEN - 1))).to.throw();
     expect(() => decodeCommitment(Buffer.concat([good, Buffer.alloc(1)]))).to.throw();
     const badKind = Buffer.from(good);
     badKind[16] = 0x02;
@@ -117,7 +115,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
       channel: seeds.config(program.programId),
       targetCumulative: 12345n,
-      signerEpoch: 0,
       expiryUnix: 0n,
     });
 
@@ -139,7 +136,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
       channel: seeds.config(program.programId),
       targetCumulative: 1n,
-      signerEpoch: 0,
       expiryUnix: 0n,
     });
 
@@ -184,7 +180,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
       channel: seeds.config(program.programId),
       targetCumulative: 7n,
-      signerEpoch: 0,
       expiryUnix: 0n,
     });
     const sig = arcisSign(digest, seed);
@@ -201,42 +196,36 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
 
     it("is deterministic, so an agent stores one secret and recomputes the rest", () => {
       const seed = walletSeed();
-      const a = deriveArcisSigner(seed, channelA, 0);
-      const b = deriveArcisSigner(seed, channelA, 0);
+      const a = deriveArcisSigner(seed, channelA);
+      const b = deriveArcisSigner(seed, channelA);
       expect(a.seed.toString("hex")).to.equal(b.seed.toString("hex"));
       expect(a.publicKey.toString("hex")).to.equal(b.publicKey.toString("hex"));
     });
 
     it("gives a different key per channel, limiting blast radius to one channel", () => {
       const seed = walletSeed();
-      expect(deriveArcisSigner(seed, channelA, 0).publicKey.toString("hex")).to.not.equal(
-        deriveArcisSigner(seed, channelB, 0).publicKey.toString("hex"),
+      expect(deriveArcisSigner(seed, channelA).publicKey.toString("hex")).to.not.equal(
+        deriveArcisSigner(seed, channelB).publicKey.toString("hex"),
       );
     });
 
-    it("gives a different key per epoch, so rotation is a counter bump", () => {
-      const seed = walletSeed();
-      expect(deriveArcisSigner(seed, channelA, 0).publicKey.toString("hex")).to.not.equal(
-        deriveArcisSigner(seed, channelA, 1).publicKey.toString("hex"),
-      );
-    });
 
     it("gives a different key per wallet", () => {
-      expect(deriveArcisSigner(walletSeed(), channelA, 0).publicKey.toString("hex")).to.not.equal(
-        deriveArcisSigner(walletSeed(), channelA, 0).publicKey.toString("hex"),
+      expect(deriveArcisSigner(walletSeed(), channelA).publicKey.toString("hex")).to.not.equal(
+        deriveArcisSigner(walletSeed(), channelA).publicKey.toString("hex"),
       );
     });
 
     it("never equals the wallet address", () => {
       const wallet = Keypair.generate();
-      const signer = deriveArcisSigner(wallet.secretKey.slice(0, 32), channelA, 0);
+      const signer = deriveArcisSigner(wallet.secretKey.slice(0, 32), channelA);
       expect(signer.publicKey.toString("hex")).to.not.equal(
         Buffer.from(wallet.publicKey.toBytes()).toString("hex"),
       );
     });
 
     it("rejects a wallet seed of the wrong length rather than silently truncating", () => {
-      expect(() => deriveArcisSigner(new Uint8Array(64), channelA, 0)).to.throw(/32 bytes/);
+      expect(() => deriveArcisSigner(new Uint8Array(64), channelA)).to.throw(/32 bytes/);
     });
 
     it("signs a commitment that verifies under the registered signer, and only that one", () => {
@@ -246,20 +235,14 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
         channel: channelA,
         targetCumulative: 500_000n,
-        signerEpoch: 0,
-        expiryUnix: 0n,
+          expiryUnix: 0n,
       };
 
       const { signature, publicKey, digest } = signCommitment(seed, commitment);
       expect(arcisVerify(signature, digest, publicKey)).to.be.true;
 
-      // A commitment signed at epoch 0 must not verify under the epoch-1 key. This is what makes
-      // rotation an actual revocation rather than a relabelling.
-      const nextEpoch = deriveArcisSigner(seed, channelA, 1);
-      expect(arcisVerify(signature, digest, nextEpoch.publicKey)).to.be.false;
-
       // Nor under the key for a different channel.
-      const otherChannel = deriveArcisSigner(seed, channelB, 0);
+      const otherChannel = deriveArcisSigner(seed, channelB);
       expect(arcisVerify(signature, digest, otherChannel.publicKey)).to.be.false;
     });
   });

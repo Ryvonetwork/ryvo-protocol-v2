@@ -28,7 +28,7 @@ mod tests {
         assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 1 + 96);
         assert_eq!(
             Channel::INIT_SPACE,
-            32 + 32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 96
+            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 1 + 96
         );
     }
 

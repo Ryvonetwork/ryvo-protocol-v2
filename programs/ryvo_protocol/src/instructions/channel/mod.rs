@@ -97,13 +97,10 @@ pub fn create_channel_handler(
     channel.payee = ctx.accounts.payee_participant.key();
     channel.mint = ctx.accounts.mint.key();
     channel.authorized_signer = authorized_signer;
-    channel.pending_authorized_signer = Pubkey::default();
     channel.settled_cumulative = 0;
     channel.locked_balance = 0;
     channel.pending_unlock_amount = 0;
     channel.pending_unlock_at = 0;
-    channel.signer_rotation_unlock_at = 0;
-    channel.signer_epoch = 0;
     channel.bump = ctx.bumps.channel;
     channel._reserved = [0u8; 96];
 

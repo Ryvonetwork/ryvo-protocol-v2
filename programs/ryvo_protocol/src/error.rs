@@ -53,10 +53,6 @@ pub enum RyvoError {
     NoChannelUnlockPending,
     #[msg("Channel unlock timelock has not elapsed")]
     ChannelUnlockLocked,
-    #[msg("No signer rotation is pending")]
-    NoSignerRotationPending,
-    #[msg("Signer rotation timelock has not elapsed")]
-    SignerRotationLocked,
 
     // --- commitment message ---
     // Exercised by unit tests in v1; the settlement path that consumes them lands in v2.
@@ -66,8 +62,6 @@ pub enum RyvoError {
     InvalidMessageDomain,
     #[msg("Commitment amount must strictly increase")]
     CommitmentAmountMustIncrease,
-    #[msg("Commitment signer epoch does not match the channel")]
-    InvalidSignerEpoch,
     #[msg("Commitment has expired")]
     CommitmentExpired,
 }

@@ -170,9 +170,9 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
 
   it("creates a channel with a derived signer and no payee involvement", async () => {
     const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
-    // The real pattern: derive the signer for this channel from the agent's wallet seed at
-    // epoch 0, rather than registering an arbitrary throwaway key.
-    const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32), channel, 0);
+    // The real pattern: derive the signer for this channel from the agent wallet seed,
+    // rather than registering an arbitrary throwaway key.
+    const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32), channel);
     const signingKey = new PublicKey(signer.publicKey);
     await createChannel(payer, payee, signingKey).rpc();
 
@@ -183,11 +183,6 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     expect(c.authorizedSigner.toBase58()).to.equal(signingKey.toBase58());
     expect(c.settledCumulative.toNumber()).to.equal(0);
     expect(c.lockedBalance.toNumber()).to.equal(0);
-    expect(c.pendingAuthorizedSigner.toBase58()).to.equal(PublicKey.default.toBase58());
-
-    // The stored epoch must match the epoch the signer was derived at, or the agent would sign
-    // under a key the settlement path will not accept.
-    expect(c.signerEpoch).to.equal(signer.epoch);
 
     // And the registered signer is NOT the agent's wallet address.
     expect(c.authorizedSigner.toBase58()).to.not.equal(payer.owner.publicKey.toBase58());
