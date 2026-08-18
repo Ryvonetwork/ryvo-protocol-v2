@@ -54,6 +54,4 @@ pub enum RyvoError {
     InvalidMessageDomain,
     #[msg("Commitment amount must strictly increase")]
     CommitmentAmountMustIncrease,
-    #[msg("Commitment has expired")]
-    CommitmentExpired,
 }

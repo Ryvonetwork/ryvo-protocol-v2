@@ -21,10 +21,23 @@
 //! off-chain cache keying to special-case canonicity. MPC circuits also want fixed-size inputs.
 //! Fixed width costs at most 7 bytes.
 //!
+//! # Why there is no expiry
+//!
+//! A commitment records that the payee did the work and the payer owes for it. It is a debt, not
+//! a time-limited offer, so it carries no clock. An expiry field would let a payer repudiate an
+//! outstanding commitment by doing nothing until it lapsed — the same attack signer rotation was
+//! removed to prevent, differing only in that it is scheduled at signing time rather than
+//! triggered afterwards.
+//!
+//! The accepted cost: a payer who over-signs can never clear the claim on-chain. Because
+//! settlement is partial, the unsatisfied ceiling keeps sweeping whatever they lock into that
+//! channel later, so their only remedy is to abandon it. That is the correct outcome for a debt
+//! genuinely owed, and a bounded one, since a channel is a single (payer, payee, mint) pair.
+//!
 //! # Length budget
 //!
 //! In-circuit Ed25519 hashes `R || A || M` = `64 + |M|` bytes through SHA3-512, whose rate is 72
-//! bytes. At `|M| = 66` that is 130 bytes, so two permutations, with headroom to `|M| = 79`
+//! bytes. At `|M| = 58` that is 122 bytes, so two permutations, with headroom to `|M| = 79`
 //! before a third. `MAX_CANONICAL_LEN` pins that ceiling.
 
 use crate::constants::COMMITMENT_DIGEST_TAG;
@@ -40,7 +53,7 @@ pub const KIND_UNILATERAL_COMMITMENT: u8 = 0x01;
 pub const VERSION: u8 = 0x01;
 
 /// Exact length of the canonical message.
-pub const CANONICAL_LEN: usize = 66;
+pub const CANONICAL_LEN: usize = 58;
 
 /// Ceiling that keeps in-circuit SHA3-512 at two permutations. See the module docs.
 pub const MAX_CANONICAL_LEN: usize = 79;
@@ -51,7 +64,6 @@ const OFF_KIND: usize = 16;
 const OFF_VERSION: usize = 17;
 const OFF_CHANNEL: usize = 18;
 const OFF_TARGET: usize = 50;
-const OFF_EXPIRY: usize = 58;
 
 /// A decoded commitment. Field order matches the wire layout.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -63,8 +75,6 @@ pub struct Commitment {
     pub channel: Pubkey,
     /// New cumulative authorization. Must strictly exceed `Channel.settled_cumulative`.
     pub target_cumulative: u64,
-    /// Unix seconds; `0` means no expiry.
-    pub expiry_unix: i64,
 }
 
 impl Commitment {
@@ -75,8 +85,7 @@ impl Commitment {
         out[OFF_KIND] = KIND_UNILATERAL_COMMITMENT;
         out[OFF_VERSION] = VERSION;
         out[OFF_CHANNEL..OFF_TARGET].copy_from_slice(self.channel.as_ref());
-        out[OFF_TARGET..OFF_EXPIRY].copy_from_slice(&self.target_cumulative.to_le_bytes());
-        out[OFF_EXPIRY..CANONICAL_LEN].copy_from_slice(&self.expiry_unix.to_le_bytes());
+        out[OFF_TARGET..CANONICAL_LEN].copy_from_slice(&self.target_cumulative.to_le_bytes());
         out
     }
 
@@ -110,16 +119,12 @@ impl Commitment {
         channel.copy_from_slice(&bytes[OFF_CHANNEL..OFF_TARGET]);
 
         let mut target = [0u8; 8];
-        target.copy_from_slice(&bytes[OFF_TARGET..OFF_EXPIRY]);
-
-        let mut expiry = [0u8; 8];
-        expiry.copy_from_slice(&bytes[OFF_EXPIRY..CANONICAL_LEN]);
+        target.copy_from_slice(&bytes[OFF_TARGET..CANONICAL_LEN]);
 
         Ok(Self {
             message_domain,
             channel: Pubkey::new_from_array(channel),
             target_cumulative: u64::from_le_bytes(target),
-            expiry_unix: i64::from_le_bytes(expiry),
         })
     }
 }
@@ -133,6 +138,11 @@ pub fn digest_of(canonical: &[u8]) -> [u8; 32] {
 ///
 /// This *is* the replay-protection mechanism, which is why the format carries no nonce and no
 /// sequence number. It is also what makes "keep only the newest commitment" safe off-chain.
+///
+/// Note this returns the *authorized* delta, not the payable one. Settlement is partial: the
+/// caller moves `min(delta, locked_balance)` and advances `settled_cumulative` by only what it
+/// actually moved, so an under-collateralized commitment stays live and collects the remainder on
+/// a later attempt.
 pub fn check_monotonic(target_cumulative: u64, settled_cumulative: u64) -> Result<u64> {
     require!(
         target_cumulative > settled_cumulative,
@@ -156,7 +166,6 @@ mod tests {
             ],
             channel: Pubkey::from_str("7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ").unwrap(),
             target_cumulative: 1_000_000,
-            expiry_unix: 0,
         }
     }
 
@@ -166,7 +175,7 @@ mod tests {
 
     #[test]
     fn length_is_within_the_sha3_budget() {
-        assert_eq!(CANONICAL_LEN, 66);
+        assert_eq!(CANONICAL_LEN, 58);
         assert!(
             CANONICAL_LEN <= MAX_CANONICAL_LEN,
             "canonical message exceeds the two-permutation SHA3-512 budget"
@@ -188,14 +197,15 @@ mod tests {
         assert_eq!(b[17], VERSION);
         assert_eq!(&b[18..50], c.channel.as_ref());
         assert_eq!(&b[50..58], &1_000_000u64.to_le_bytes());
-        assert_eq!(&b[58..66], &0i64.to_le_bytes());
     }
 
+    /// The message now ends at `target_cumulative`, so the length check is what stops a reader
+    /// accepting a message carrying a trailing field it does not understand.
     #[test]
     fn rejects_wrong_length() {
         let c = sample();
         let b = c.encode();
-        assert!(Commitment::decode(&b[..65]).is_err());
+        assert!(Commitment::decode(&b[..57]).is_err());
         let mut long = b.to_vec();
         long.push(0);
         assert!(Commitment::decode(&long).is_err());
@@ -233,10 +243,6 @@ mod tests {
             target_cumulative: base.target_cumulative + 1,
             ..base
         });
-        variants.push(Commitment {
-            expiry_unix: 1,
-            ..base
-        });
 
         for v in variants {
             assert_ne!(v.digest(), d, "a field change did not alter the digest: {v:?}");
@@ -261,12 +267,11 @@ mod tests {
         assert_eq!(
             hex(&c.encode()),
             "99c670af9da768bc427a4b1b1b0f126701015f169b2d9ed820c0eaf9c72740fa\
-             39e309e4fdd94c8cc5105bf66b53837ed0cf40420f0000000000000000000000\
-             0000",
+             39e309e4fdd94c8cc5105bf66b53837ed0cf40420f0000000000",
         );
         assert_eq!(
             hex(&c.digest()),
-            "f3add7550ffbad247a22fb231775746c2c3e5eb6a7638ae67bfa0a3ea6081e43",
+            "c40f694cd272cd1970b1e24b607898f0c286dd02316cf98652eca2158ff2fe33",
         );
     }
 }

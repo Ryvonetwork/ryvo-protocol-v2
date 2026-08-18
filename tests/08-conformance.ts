@@ -63,7 +63,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         messageDomain: Buffer.from(v.messageDomain, "hex"),
         channel: new PublicKey(v.channel),
         targetCumulative: BigInt(v.targetCumulative),
-          expiryUnix: BigInt(v.expiryUnix),
       };
       expect(encodeCommitment(c).toString("hex"), `encode mismatch: ${v.name}`).to.equal(v.encoded);
       expect(commitmentDigest(c).toString("hex"), `digest mismatch: ${v.name}`).to.equal(v.digest);
@@ -114,7 +113,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
       channel: seeds.config(program.programId),
       targetCumulative: 12345n,
-      expiryUnix: 0n,
     });
 
     const sig = arcisSign(digest, seed);
@@ -135,7 +133,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
       channel: seeds.config(program.programId),
       targetCumulative: 1n,
-      expiryUnix: 0n,
     });
 
     const arcisPub = arcisPublicKey(seed);
@@ -179,7 +176,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
       channel: seeds.config(program.programId),
       targetCumulative: 7n,
-      expiryUnix: 0n,
     });
     const sig = arcisSign(digest, seed);
     expect(arcisVerify(sig, digest, arcisPub)).to.be.true;
@@ -210,7 +206,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
         channel: channelA,
         targetCumulative: 1n,
-        expiryUnix: 0n,
       };
       const commitB = { ...commitA, channel: channelB };
 
@@ -247,7 +242,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
         channel: channelA,
         targetCumulative: 500_000n,
-        expiryUnix: 0n,
       };
 
       const { signature, publicKey, digest } = signCommitment(seed, base);

@@ -12,7 +12,7 @@ import { arcisEd25519 as arcisEd25519Upstream } from "@arcium-hq/client";
 
 export const KIND_UNILATERAL_COMMITMENT = 0x01;
 export const VERSION = 0x01;
-export const CANONICAL_LEN = 66;
+export const CANONICAL_LEN = 58;
 /** Keeps in-circuit SHA3-512 at two permutations: 64 + |M| <= 143. */
 export const MAX_CANONICAL_LEN = 79;
 
@@ -23,7 +23,6 @@ export interface Commitment {
   messageDomain: Buffer; // 16 bytes
   channel: PublicKey;
   targetCumulative: bigint;
-  expiryUnix: bigint;
 }
 
 export function deriveMessageDomain(programId: PublicKey, chainId: number): Buffer {
@@ -45,7 +44,6 @@ export function encodeCommitment(c: Commitment): Buffer {
   out[17] = VERSION;
   c.channel.toBuffer().copy(out, 18);
   out.writeBigUInt64LE(c.targetCumulative, 50);
-  out.writeBigInt64LE(c.expiryUnix, 58);
   return out;
 }
 
@@ -68,7 +66,6 @@ export function decodeCommitment(bytes: Buffer): Commitment {
     messageDomain: Buffer.from(bytes.subarray(0, 16)),
     channel: new PublicKey(bytes.subarray(18, 50)),
     targetCumulative: bytes.readBigUInt64LE(50),
-    expiryUnix: bytes.readBigInt64LE(58),
   };
 }
 
