@@ -27,6 +27,7 @@ import {
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
+  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
@@ -137,7 +138,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   const chanAG: Chan[] = [];
   const chanGP: Chan[] = [];
   const records: RouteRecord[] = [];
-  const routeOf: { ag: number; gp: number; targetAg: number; targetGp: number }[] = [];
+  const routeOf: { ag: number; gp: number; targetAg: number; targetGp: number; increment: number }[] = [];
   const stagings: { staging: PublicKey; count: number; bits: boolean[] }[] = [];
   const stats = { tx: { setup: 0, stage: 0, queue: 0, callback: 0, settle: 0 }, solStart: 0, t: {} as Record<string, number> };
   const startedAt = Date.now();
@@ -202,7 +203,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       ];
       const tx = new anchor.web3.Transaction().add(...ixs);
       tx.feePayer = p.owner.publicKey;
-      await retry(() => provider.sendAndConfirm(tx, [p.owner]), 5, "register");
+      await retry(() => sendAndConfirmTransaction(connection, tx, [p.owner], { commitment: "confirmed" }), 5, "register");
       stats.tx.setup++;
     };
     await register(gateway);
@@ -219,7 +220,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
         }).instruction(),
       );
       tx.feePayer = from.owner.publicKey;
-      await retry(() => provider.sendAndConfirm(tx, [from.owner]), 5, "channel");
+      await retry(() => sendAndConfirmTransaction(connection, tx, [from.owner], { commitment: "confirmed" }), 5, "channel");
       stats.tx.setup++;
       const c = await program.account.channel.fetch(key);
       return { key, id: BigInt(c.channelId.toString()), payer: from, payee: to };
@@ -248,15 +249,22 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   });
 
   it("3. signs 100 route commitments: agent, then gateway countersigns", async () => {
+    // Each agent has its own channel, so its target is just its amount. The gateway->provider
+    // channels are SHARED by every agent routed to that provider, and channels are cumulative:
+    // the gateway signs a running total per provider channel, and the records must be applied
+    // in signing order (they are staged in this order).
+    const gpCumulative = new Array(PROVIDERS).fill(0);
     for (let i = 0; i < AGENTS; i++) {
       const gp = i % PROVIDERS;
       const targetAg = (10 + (i % 25)) * ONE; // 10..34 of the 40 locked
-      const targetGp = targetAg - ONE; // gateway keeps 1 as its fee
+      const increment = targetAg - ONE; // gateway keeps 1 per route as its fee
+      gpCumulative[gp] += increment;
+      const targetGp = gpCumulative[gp];
       const c: RouteCommitment = { kind: KIND_ROUTE, messageDomain: domain, channelAgId: chanAG[i].id, channelGpId: chanGP[gp].id, targetAg: BigInt(targetAg), targetGp: BigInt(targetGp) };
       const a = signCommitment(agents[i].seed, c);
       const g = signCommitment(gateway.seed, c);
       records.push({ commitment: c, agentSigner: a.publicKey, agentSignature: a.signature, gatewaySigner: g.publicKey, gatewaySignature: g.signature });
-      routeOf.push({ ag: i, gp, targetAg, targetGp });
+      routeOf.push({ ag: i, gp, targetAg, targetGp, increment });
     }
     console.log(`    ${records.length} route commitments, ${records.length * 2} signatures`);
   });
@@ -340,7 +348,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   it("6. asserts every balance and the solvency invariant, then reclaims staging rent", async () => {
     const expProvider = new Array(PROVIDERS).fill(0);
     const expFee = new Array(PROVIDERS).fill(0);
-    for (const r of routeOf) { expProvider[r.gp] += r.targetGp; expFee[r.gp] += r.targetAg - r.targetGp; }
+    for (const r of routeOf) { expProvider[r.gp] += r.increment; expFee[r.gp] += r.targetAg - r.increment; }
     for (let j = 0; j < PROVIDERS; j++) {
       const bal = await program.account.balance.fetch(providers[j].balance);
       expect(bal.available.toNumber(), `provider ${j}`).to.equal(expProvider[j]);
