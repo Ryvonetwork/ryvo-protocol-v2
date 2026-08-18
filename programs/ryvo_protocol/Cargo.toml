@@ -28,7 +28,7 @@ anchor-lang = "1.0.2"
 # `Program<'info, Token>` on every token-touching instruction, which pins the token program
 # to the legacy SPL Token address and therefore rejects token-2022 mints — whose transfer
 # fees, transfer hooks and confidential transfers would each break the solvency invariant
-# `vault.amount == sum(available) + sum(locked) + accrued_fees`. We use `anchor_spl::token`
+# `vault.amount == sum(available) + sum(locked)`. We use `anchor_spl::token`
 # types exclusively and never `token_interface`.
 #
 # `token_2022` is enabled only because anchor-spl 1.0.2's `idl_build.rs` references
