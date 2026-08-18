@@ -197,8 +197,8 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
 
 
   it("refuses a channel when the payee has no balance for the mint", async () => {
-    // This is the forward-compatibility guard: v2 settlement cannot create accounts, so a settlement
-    // with no payee balance would be permanently unappliable.
+    // This is the forward-compatibility guard: v2 settlement cannot create accounts, so a
+    // channel with no payee balance would be permanently unsettleable.
     const owner = Keypair.generate();
     await fund(provider, owner.publicKey, 3);
     const participant = seeds.participant(program.programId, owner.publicKey);
