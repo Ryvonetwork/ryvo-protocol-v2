@@ -71,7 +71,7 @@ pub struct Commitment {
     /// Deployment replay boundary; must equal `Config.message_domain`.
     pub message_domain: [u8; 16],
     /// The `Channel` PDA. Commits to payer, payee, mint and program id at once, which is why
-    /// there is no separate lane-binding hash.
+    /// there is no separate channel-binding hash.
     pub channel: Pubkey,
     /// New cumulative authorization. Must strictly exceed `Channel.settled_cumulative`.
     pub target_cumulative: u64,

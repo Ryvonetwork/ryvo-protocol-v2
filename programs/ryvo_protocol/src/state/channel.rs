@@ -9,7 +9,7 @@ use anchor_lang::prelude::*;
 ///
 /// Because the PDA is derived from payer, payee and mint, the channel's own address commits to
 /// all three. That is why the signed commitment carries this address and there is no separate
-/// lane-binding hash: an account address is collision-free by construction, needs no truncation
+/// channel-binding hash: an account address is collision-free by construction, needs no truncation
 /// or birthday argument, is invertible for dispute forensics, and removes a derivation that would
 /// otherwise have to be mirrored bug-for-bug in Rust, TypeScript and an Arcis circuit.
 #[account]

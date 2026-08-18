@@ -14,7 +14,7 @@ use anchor_spl::token::Mint;
 ///
 /// Both parties' `Balance` accounts must already exist and are passed read-only. That is a
 /// forward-compatibility requirement, not a convenience: the v2 settlement applier cannot create
-/// accounts, so a channel whose payee has no balance for the mint would produce lanes that can
+/// accounts, so a channel whose payee has no balance for the mint would produce settlements that can
 /// never be applied, stranding funds until the unlock timelock. `open_balance` lets the payer
 /// create the payee's balance for them, so this needs no coordination.
 ///

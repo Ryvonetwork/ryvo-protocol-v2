@@ -41,7 +41,7 @@ anchor-spl = { version = "1.0.2", default-features = false, features = [
 ] }
 # Syscall-backed SHA-256. Used for the message domain and the commitment digest. Never the
 # software `sha2` crate: the prior POC measured ~1M CU for 12.8KB there versus ~7k CU for the
-# syscall, and the settlement path hashes once per lane.
+# syscall, and the settlement path hashes once per channel.
 solana-sha256-hasher = "3.1.0"
 
 [lints.rust]

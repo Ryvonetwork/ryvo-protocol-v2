@@ -33,7 +33,7 @@ mod tests {
     }
 
     /// Every non-singleton account must carry reserved space for at least two pubkeys plus two
-    /// timestamps. The prior design's lane record had zero reserved bytes; that is the condition
+    /// timestamps. The prior design had a per-channel settlement record with zero reserved bytes; that is the condition
     /// that makes a migration unavoidable rather than optional.
     #[test]
     fn non_singleton_accounts_reserve_growth_room() {
