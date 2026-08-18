@@ -16,7 +16,6 @@ export const BPF_LOADER_UPGRADEABLE = new PublicKey(
  * money and `withdraw` is immediate.
  */
 export const CHANNEL_TIMELOCK = 2;
-export const FEE_BPS = 30;
 export const CHAIN_ID = 0; // localnet
 
 /**
@@ -49,10 +48,6 @@ export function setupProvider(): anchor.AnchorProvider {
  */
 export function protocolAuthority(): Keypair {
   return Keypair.fromSeed(Uint8Array.from(Buffer.alloc(32, 7)));
-}
-
-export function protocolFeeRecipient(): Keypair {
-  return Keypair.fromSeed(Uint8Array.from(Buffer.alloc(32, 9)));
 }
 
 export function localWallet(): Keypair {
@@ -129,7 +124,6 @@ export async function ensureConfig(
   program: Program<RyvoProtocol>,
   provider: anchor.AnchorProvider,
   authority: Keypair,
-  feeRecipient: PublicKey,
 ): Promise<void> {
   // The authority is the rent payer for authority-gated `init` accounts (register_token), so it
   // needs lamports of its own — Anchor's provider wallet pays fees but not another account's rent.
@@ -144,13 +138,7 @@ export async function ensureConfig(
 
   const upgradeAuthority = localWallet();
   await program.methods
-    .initialize(
-      CHAIN_ID,
-      FEE_BPS,
-      new anchor.BN(CHANNEL_TIMELOCK),
-      authority.publicKey,
-      feeRecipient,
-    )
+    .initialize(CHAIN_ID, new anchor.BN(CHANNEL_TIMELOCK), authority.publicKey)
     .accounts({
       payer: upgradeAuthority.publicKey,
       config: configPda,

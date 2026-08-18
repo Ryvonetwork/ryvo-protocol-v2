@@ -42,35 +42,23 @@ pub mod ryvo_protocol {
     pub fn initialize(
         ctx: Context<Initialize>,
         chain_id: u16,
-        fee_bps: u16,
         channel_timelock_seconds: i64,
         initial_authority: Pubkey,
-        fee_recipient: Pubkey,
     ) -> Result<()> {
         instructions::admin::initialize::handler(
             ctx,
             chain_id,
-            fee_bps,
             channel_timelock_seconds,
             initial_authority,
-            fee_recipient,
         )
     }
 
-    /// Update the mutable subset only. `chain_id`, `message_domain` and the channel timelock are
-    /// deliberately unreachable from here.
-    pub fn update_config(
-        ctx: Context<UpdateConfig>,
-        new_fee_recipient: Option<Pubkey>,
-        new_fee_bps: Option<u16>,
-        new_pending_authority: Option<Pubkey>,
+    /// Nominate a successor authority. This is the whole of config mutability.
+    pub fn nominate_authority(
+        ctx: Context<NominateAuthority>,
+        new_authority: Pubkey,
     ) -> Result<()> {
-        instructions::admin::update_config::update_config_handler(
-            ctx,
-            new_fee_recipient,
-            new_fee_bps,
-            new_pending_authority,
-        )
+        instructions::admin::update_config::nominate_authority_handler(ctx, new_authority)
     }
 
     pub fn accept_config_authority(ctx: Context<AcceptConfigAuthority>) -> Result<()> {
@@ -85,10 +73,6 @@ pub mod ryvo_protocol {
     /// Pause or resume *entry* for a mint: deposits, channel creation, locking. Never exits.
     pub fn set_token_enabled(ctx: Context<SetTokenEnabled>, enabled: bool) -> Result<()> {
         instructions::admin::token::set_token_enabled_handler(ctx, enabled)
-    }
-
-    pub fn withdraw_protocol_fees(ctx: Context<WithdrawProtocolFees>, amount: u64) -> Result<()> {
-        instructions::admin::token::withdraw_protocol_fees_handler(ctx, amount)
     }
 
     // --- participants ---
@@ -109,8 +93,8 @@ pub mod ryvo_protocol {
         instructions::balance::deposit_handler(ctx, amount)
     }
 
-    /// Withdraw unlocked balance, immediately. Safe without a timelock because settlement is
-    /// payable only from a channel's locked collateral, never from this balance.
+    /// Withdraw unlocked balance, immediately and in full. Safe without a timelock because
+    /// settlement is payable only from a channel's locked collateral, never from this balance.
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         instructions::balance::withdraw_handler(ctx, amount)
     }

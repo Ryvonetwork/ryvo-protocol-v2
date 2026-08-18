@@ -6,7 +6,7 @@ use anchor_lang::prelude::*;
 /// identity: it is derived from the owner, there is no close instruction, so it can never be
 /// recycled — which is the property that matters for replay safety. A counter would also have
 /// forced every registration to write-lock the singleton `Config`, serialising all sign-ups and
-/// letting a user-facing instruction mutate the account that holds the fee parameters.
+/// letting a user-facing instruction mutate the singleton config account.
 ///
 /// There is also no inbound-channel policy. Opening a channel *to* someone costs them nothing —
 /// the payer pays the rent and the only thing it enables is sending them money — so requiring

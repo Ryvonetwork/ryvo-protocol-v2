@@ -1,5 +1,5 @@
 use crate::constants::{
-    BALANCE_SEED, BPS_DENOMINATOR, CONFIG_SEED, PARTICIPANT_SEED, TOKEN_CONFIG_SEED, VAULT_SEED,
+    BALANCE_SEED, CONFIG_SEED, PARTICIPANT_SEED, TOKEN_CONFIG_SEED, VAULT_SEED,
 };
 use crate::error::RyvoError;
 use crate::events::{BalanceOpened, Deposited, Withdrawn};
@@ -210,40 +210,27 @@ pub fn withdraw_handler(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         RyvoError::InvalidWithdrawalDestination
     );
 
-    let fee = ((amount as u128)
-        .checked_mul(ctx.accounts.config.fee_bps as u128)
-        .ok_or(RyvoError::MathOverflow)?
-        / BPS_DENOMINATOR) as u64;
-    let net = amount.checked_sub(fee).ok_or(RyvoError::MathOverflow)?;
-
     let mint_key = ctx.accounts.mint.key();
     let bump = ctx.accounts.token_config.bump;
     let seeds: &[&[u8]] = &[TOKEN_CONFIG_SEED.as_bytes(), mint_key.as_ref(), &[bump]];
 
-    if net > 0 {
-        transfer_checked(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.key(),
-                TransferChecked {
-                    from: ctx.accounts.vault.to_account_info(),
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.destination.to_account_info(),
-                    authority: ctx.accounts.token_config.to_account_info(),
-                },
-                &[seeds],
-            ),
-            net,
-            ctx.accounts.token_config.decimals,
-        )?;
-    }
-
-    // The fee stays in the vault, tracked as accrued, so a frozen or closed fee account can never
-    // break a user's exit.
-    let token_config = &mut ctx.accounts.token_config;
-    token_config.accrued_fees = token_config
-        .accrued_fees
-        .checked_add(fee)
-        .ok_or(RyvoError::MathOverflow)?;
+    // The full amount leaves. The protocol takes no cut: a payment moves numbers between two
+    // ledger rows and the tokens never leave the vault, so there is no on-chain service to charge
+    // for.
+    transfer_checked(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.key(),
+            TransferChecked {
+                from: ctx.accounts.vault.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
+                to: ctx.accounts.destination.to_account_info(),
+                authority: ctx.accounts.token_config.to_account_info(),
+            },
+            &[seeds],
+        ),
+        amount,
+        ctx.accounts.token_config.decimals,
+    )?;
 
     let balance = &mut ctx.accounts.balance;
     balance.available = balance
@@ -256,8 +243,6 @@ pub fn withdraw_handler(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         participant: ctx.accounts.participant.key(),
         mint: mint_key,
         amount,
-        fee_amount: fee,
-        net_amount: net,
         destination: ctx.accounts.destination.key(),
     });
     Ok(())

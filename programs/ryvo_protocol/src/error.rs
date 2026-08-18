@@ -9,14 +9,10 @@ pub enum RyvoError {
     // --- config / authority ---
     #[msg("Chain id is not a recognised deployment target")]
     InvalidChainId,
-    #[msg("Fee exceeds the maximum permitted basis points")]
-    InvalidFeeBps,
     #[msg("Timelock is outside the permitted range")]
     InvalidTimelock,
     #[msg("Authority may not be the default pubkey")]
     InvalidAuthority,
-    #[msg("Fee recipient may not be the default pubkey")]
-    InvalidFeeRecipient,
     #[msg("Only the program upgrade authority may initialize the config")]
     UnauthorizedInitializer,
     #[msg("No pending authority has been nominated")]
@@ -31,8 +27,6 @@ pub enum RyvoError {
     TokenDisabled,
     #[msg("Token mint does not match the account it was passed with")]
     InvalidTokenMint,
-    #[msg("Requested amount exceeds accrued protocol fees")]
-    InsufficientProtocolFees,
 
     // --- balance / withdrawal ---
     #[msg("Amount must be greater than zero")]

@@ -2,34 +2,32 @@ use anchor_lang::prelude::*;
 
 /// Singleton protocol configuration. PDA seeds: `["config"]`.
 ///
-/// `chain_id`, `message_domain` and both timelocks are immutable after `initialize`. The
-/// timelocks are the only thing backing the payee's collateral guarantee and the user's exit
-/// guarantee: lowering the channel timelock would let a payer yank collateral out from under a
-/// payee mid-service, and raising the withdrawal timelock would freeze user funds. Both
-/// directions have a victim, so there is no safe mutable range. The price of that is that a
-/// wrong timelock means a redeploy.
+/// `chain_id`, `message_domain` and the timelock are immutable after `initialize`. The timelock is
+/// the only thing backing the payee's collateral guarantee: lowering it would let a payer yank
+/// collateral out from under a payee mid-service, so there is no safe mutable range. The price of
+/// that is that a wrong timelock means a redeploy.
+///
+/// The protocol takes no fee. There is nothing on-chain for it to charge for — a payment moves
+/// numbers between two ledger rows and the tokens never leave the vault — so a withdrawal fee
+/// would be rent extraction rather than payment for a service. Any future revenue belongs off-chain
+/// or in a yield layer that does not exist yet.
 #[account]
 #[derive(InitSpace)]
 pub struct Config {
-    /// Active config authority.
+    /// Active config authority. Its only powers are allowlisting mints, pausing them for new
+    /// deposits, and handing the role on. It can never move user funds.
     pub authority: Pubkey,
     /// Nominated successor. `Pubkey::default()` means no handoff is pending. A handoff requires
     /// the successor to explicitly accept, so a typo cannot brick the authority.
     pub pending_authority: Pubkey,
-    /// Owner of the accounts that protocol fees may be withdrawn to.
-    pub fee_recipient: Pubkey,
     /// Immutable. `SHA256(MESSAGE_DOMAIN_TAG || program_id || chain_id_le)[..16]`.
     pub message_domain: [u8; 16],
-    /// Immutable. Delay for both channel unlock and (in v2) authorized-signer rotation. One
-    /// field rather than two: the two flows protect the same counterparty against the same
-    /// class of surprise, so a single knob is easier to reason about and to audit.
+    /// Immutable. Delay before a unilateral channel unlock may execute.
     ///
     /// This is the protocol's only timelock. Withdrawals need none, because `available` is money
     /// nobody else has a claim on — settlement is payable strictly from `locked_balance`, so the
     /// payee's protection lives entirely on the unlock path, which is where the collateral is.
     pub channel_timelock_seconds: i64,
-    /// Withdrawal fee in basis points, `0..=MAX_FEE_BPS`.
-    pub fee_bps: u16,
     /// Immutable deployment selector that feeds `message_domain`.
     pub chain_id: u16,
     pub bump: u8,

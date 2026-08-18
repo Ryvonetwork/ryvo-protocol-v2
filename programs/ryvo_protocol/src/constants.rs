@@ -36,15 +36,10 @@ pub const COMMITMENT_DIGEST_TAG: &str = "ryvo-commitment-v1";
 
 // Bounds.
 
-/// Withdrawal fee ceiling, in basis points.
-pub const MAX_FEE_BPS: u16 = 30;
-
-/// Timelock ceiling, in seconds (30 days). Applies to both the withdrawal timelock and the
-/// channel timelock. Both are immutable after `initialize`.
+/// Timelock ceiling, in seconds (30 days). Applies to the channel unlock timelock, which is the
+/// protocol's only timelock and is immutable after `initialize`.
 pub const MAX_TIMELOCK_SECONDS: i64 = 30 * 24 * 60 * 60;
 
-/// Mint decimals ceiling. Bounds fee arithmetic; nothing sane exceeds 9.
+/// Mint decimals ceiling. Nothing sane exceeds 9.
 pub const MAX_MINT_DECIMALS: u8 = 9;
 
-/// Basis-point denominator.
-pub const BPS_DENOMINATOR: u128 = 10_000;

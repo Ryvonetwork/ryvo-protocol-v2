@@ -6,23 +6,19 @@ use anchor_lang::prelude::*;
 #[event]
 pub struct ConfigInitialized {
     pub authority: Pubkey,
-    pub fee_recipient: Pubkey,
     pub chain_id: u16,
     pub message_domain: [u8; 16],
-    pub fee_bps: u16,
     pub channel_timelock_seconds: i64,
 }
 
 #[event]
-pub struct ConfigUpdated {
+pub struct AuthorityNominated {
     pub authority: Pubkey,
-    pub fee_recipient: Pubkey,
-    pub fee_bps: u16,
     pub pending_authority: Pubkey,
 }
 
 #[event]
-pub struct ConfigAuthorityAccepted {
+pub struct AuthorityAccepted {
     pub previous_authority: Pubkey,
     pub new_authority: Pubkey,
 }
@@ -38,14 +34,6 @@ pub struct TokenRegistered {
 pub struct TokenEnabledChanged {
     pub mint: Pubkey,
     pub enabled: bool,
-}
-
-#[event]
-pub struct ProtocolFeesWithdrawn {
-    pub mint: Pubkey,
-    pub amount: u64,
-    pub destination: Pubkey,
-    pub remaining_accrued: u64,
 }
 
 #[event]
@@ -76,11 +64,7 @@ pub struct Withdrawn {
     pub balance: Pubkey,
     pub participant: Pubkey,
     pub mint: Pubkey,
-    /// Debited from `available` in full — settlement cannot reach this balance, so there is no
-    /// residual case.
     pub amount: u64,
-    pub fee_amount: u64,
-    pub net_amount: u64,
     pub destination: Pubkey,
 }
 

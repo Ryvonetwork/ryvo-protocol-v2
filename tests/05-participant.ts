@@ -8,7 +8,6 @@ import {
   expectReject,
   fund,
   protocolAuthority,
-  protocolFeeRecipient,
   setupProvider,
   seeds,
 } from "./shared";
@@ -20,12 +19,7 @@ describe("ryvo_protocol / step 5: participants", () => {
   const configPda = seeds.config(program.programId);
 
   before(async () => {
-    await ensureConfig(
-      program,
-      provider,
-      protocolAuthority(),
-      protocolFeeRecipient().publicKey,
-    );
+    await ensureConfig(program, provider, protocolAuthority());
   });
 
   const register = async (owner: Keypair) => {
@@ -53,7 +47,7 @@ describe("ryvo_protocol / step 5: participants", () => {
 
   it("leaves the singleton config byte-identical, proving no global counter", async () => {
     // A participant-id counter in Config would write-lock the singleton on every registration,
-    // serialising sign-ups and letting a user instruction mutate the fee parameters.
+    // serialising sign-ups and letting a user instruction mutate the singleton config.
     const before = await provider.connection.getAccountInfo(configPda);
     await register(Keypair.generate());
     await register(Keypair.generate());

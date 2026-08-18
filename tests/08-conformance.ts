@@ -31,7 +31,6 @@ import {
   localWallet,
   newMint,
   protocolAuthority,
-  protocolFeeRecipient,
   setupProvider,
   seeds,
 } from "./shared";
@@ -50,7 +49,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
   );
 
   before(async () => {
-    await ensureConfig(program, provider, authority, protocolFeeRecipient().publicKey);
+    await ensureConfig(program, provider, authority);
   });
 
   // ---------------------------------------------------------------- conformance
@@ -348,7 +347,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     async function assertSolvent(m: PublicKey) {
       const key = m.toBase58();
       const vaultAcc = await getAccount(provider.connection, vaults.get(key)!, "confirmed", TOKEN_PROGRAM_ID);
-      const tc = await program.account.tokenConfig.fetch(tokenConfigs.get(key)!);
       const balances = await program.account.balance.all();
       const chans = await program.account.channel.all();
       const sumAvailable = balances
@@ -358,7 +356,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         .filter((c) => c.account.mint.toBase58() === key)
         .reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
       expect(vaultAcc.amount.toString(), `solvency violated for mint ${key}`).to.equal(
-        (sumAvailable + sumLocked + BigInt(tc.accruedFees.toString())).toString(),
+        (sumAvailable + sumLocked).toString(),
       );
     }
 

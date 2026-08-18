@@ -19,7 +19,6 @@ import {
   localWallet,
   newMint,
   protocolAuthority,
-  protocolFeeRecipient,
   setupProvider,
   seeds,
 } from "./shared";
@@ -117,7 +116,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   });
 
   before(async () => {
-    await ensureConfig(program, provider, authority, protocolFeeRecipient().publicKey);
+    await ensureConfig(program, provider, authority);
     mint = await newMint(provider, 6);
     tokenConfig = seeds.tokenConfig(program.programId, mint);
     vault = seeds.vault(program.programId, mint);
@@ -137,7 +136,6 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
 
   async function assertSolvent() {
     const vaultAcc = await getAccount(provider.connection, vault, "confirmed", TOKEN_PROGRAM_ID);
-    const tc = await program.account.tokenConfig.fetch(tokenConfig);
     const balances = await program.account.balance.all();
     const channels = await program.account.channel.all();
 
@@ -149,7 +147,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
       .reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
 
     expect(vaultAcc.amount.toString()).to.equal(
-      (sumAvailable + sumLocked + BigInt(tc.accruedFees.toString())).toString(),
+      (sumAvailable + sumLocked).toString(),
       "solvency invariant violated",
     );
   }

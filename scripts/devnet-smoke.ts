@@ -30,7 +30,6 @@ const DEVNET_CHAIN_ID = 1;
 // Devnet-only, and permanent for this deployment. The channel unlock delay is the protocol's
 // only timelock; withdrawals are immediate because settlement cannot reach free balance.
 const CHANNEL_TIMELOCK = 10;
-const FEE_BPS = 30;
 const ONE = 1_000_000;
 
 const BPF_LOADER_UPGRADEABLE = new PublicKey(
@@ -91,7 +90,6 @@ describe("ryvo_protocol devnet smoke", function () {
       await program.methods
         .initialize(
           DEVNET_CHAIN_ID,
-          FEE_BPS,
           new anchor.BN(CHANNEL_TIMELOCK),
           payer.publicKey,
           payer.publicKey,
@@ -270,7 +268,7 @@ describe("ryvo_protocol devnet smoke", function () {
     expect(c.lockedBalance.toNumber()).to.equal(0);
   });
 
-  it("withdraws immediately, net of fee, leaving the vault solvent", async () => {
+  it("withdraws immediately and in full, leaving the vault solvent", async () => {
     const ataBefore = await getAccount(connection, payerParty.ata, "confirmed", TOKEN_PROGRAM_ID);
     await program.methods
       .withdraw(new anchor.BN(50 * ONE))
@@ -284,21 +282,15 @@ describe("ryvo_protocol devnet smoke", function () {
       .signers([payerParty.owner]).rpc();
     const ataAfter = await getAccount(connection, payerParty.ata, "confirmed", TOKEN_PROGRAM_ID);
 
-    const fee = Math.floor((50 * ONE * FEE_BPS) / 10_000);
-    expect(Number(ataAfter.amount - ataBefore.amount)).to.equal(50 * ONE - fee);
+    expect(Number(ataAfter.amount - ataBefore.amount)).to.equal(50 * ONE);
 
     const vaultAcc = await getAccount(connection, pda.vault(mint), "confirmed", TOKEN_PROGRAM_ID);
-    const tc = await program.account.tokenConfig.fetch(pda.tokenConfig(mint));
     const bal = await program.account.balance.fetch(payerParty.balance);
     const chan = await program.account.channel.fetch(channel);
     expect(vaultAcc.amount.toString()).to.equal(
-      (
-        BigInt(bal.available.toString()) +
-        BigInt(chan.lockedBalance.toString()) +
-        BigInt(tc.accruedFees.toString())
-      ).toString(),
+      (BigInt(bal.available.toString()) + BigInt(chan.lockedBalance.toString())).toString(),
       "solvency invariant violated on devnet",
     );
-    console.log("    vault:", vaultAcc.amount.toString(), "accrued fees:", tc.accruedFees.toString());
+    console.log("    vault:", vaultAcc.amount.toString());
   });
 });

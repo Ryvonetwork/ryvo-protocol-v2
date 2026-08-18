@@ -10,14 +10,12 @@ import {
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import { expect } from "chai";
 import {
-  FEE_BPS,
   ensureConfig,
   expectReject,
   fund,
   localWallet,
   newMint,
   protocolAuthority,
-  protocolFeeRecipient,
   setupProvider,
   seeds,
 } from "./shared";
@@ -27,7 +25,6 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
   const program = anchor.workspace.RyvoProtocol as Program<RyvoProtocol>;
 
   const authority = protocolAuthority();
-  const feeRecipient = protocolFeeRecipient();
   const configPda = seeds.config(program.programId);
   const payer = localWallet();
 
@@ -44,7 +41,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
   const ONE = 1_000_000;
 
   before(async () => {
-    await ensureConfig(program, provider, authority, feeRecipient.publicKey);
+    await ensureConfig(program, provider, authority);
 
     mint = await newMint(provider, DECIMALS);
     tokenConfig = seeds.tokenConfig(program.programId, mint);
@@ -85,10 +82,9 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     );
   });
 
-  /** vault.amount == sum(available) + sum(locked) + accrued_fees */
+  /** vault.amount == sum(available) + sum(locked) */
   async function assertSolvent() {
     const vaultAcc = await getAccount(provider.connection, vault, "confirmed", TOKEN_PROGRAM_ID);
-    const tc = await program.account.tokenConfig.fetch(tokenConfig);
     const balances = await program.account.balance.all();
     const channels = (program.account as any).channel
       ? await (program.account as any).channel.all()
@@ -102,7 +98,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
       .reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
 
     expect(vaultAcc.amount.toString()).to.equal(
-      (sumAvailable + sumLocked + BigInt(tc.accruedFees.toString())).toString(),
+      (sumAvailable + sumLocked).toString(),
       "solvency invariant violated",
     );
   }
@@ -165,23 +161,18 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     await assertSolvent();
   });
 
-  it("withdraws immediately, net of fee, with no timelock", async () => {
+  it("withdraws immediately and in full, with no timelock and no fee", async () => {
     const balBefore = await program.account.balance.fetch(balance);
     const ataBefore = await getAccount(provider.connection, ownerAta, "confirmed", TOKEN_PROGRAM_ID);
-    const tcBefore = await program.account.tokenConfig.fetch(tokenConfig);
 
     await withdraw(20 * ONE).rpc();
 
-    const expectedFee = Math.floor((20 * ONE * FEE_BPS) / 10_000);
-    const expectedNet = 20 * ONE - expectedFee;
-
     const balAfter = await program.account.balance.fetch(balance);
     const ataAfter = await getAccount(provider.connection, ownerAta, "confirmed", TOKEN_PROGRAM_ID);
-    const tcAfter = await program.account.tokenConfig.fetch(tokenConfig);
 
     expect(balAfter.available.toNumber()).to.equal(balBefore.available.toNumber() - 20 * ONE);
-    expect(Number(ataAfter.amount - ataBefore.amount)).to.equal(expectedNet);
-    expect(tcAfter.accruedFees.toNumber()).to.equal(tcBefore.accruedFees.toNumber() + expectedFee);
+    // The whole amount arrives: the protocol takes no cut.
+    expect(Number(ataAfter.amount - ataBefore.amount)).to.equal(20 * ONE);
     await assertSolvent();
   });
 
@@ -203,11 +194,10 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     await expectReject(withdraw(ONE, ownerAta, stranger).rpc());
   });
 
-  it("rounds a sub-fee withdrawal to a zero fee without underflowing", async () => {
+  it("withdraws a single unit without rounding it away", async () => {
     const ataBefore = await getAccount(provider.connection, ownerAta, "confirmed", TOKEN_PROGRAM_ID);
     await withdraw(1).rpc();
     const ataAfter = await getAccount(provider.connection, ownerAta, "confirmed", TOKEN_PROGRAM_ID);
-    // 1 * 30 / 10000 == 0, so the user receives the whole unit.
     expect(Number(ataAfter.amount - ataBefore.amount)).to.equal(1);
     await assertSolvent();
   });

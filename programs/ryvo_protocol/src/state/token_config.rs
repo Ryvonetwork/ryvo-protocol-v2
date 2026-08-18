@@ -15,10 +15,6 @@ pub struct TokenConfig {
     pub mint: Pubkey,
     /// The SPL token account at `["vault", mint]` holding all deposits for this mint.
     pub vault: Pubkey,
-    /// Protocol fees already earned and still sitting in the vault. Fees are never pushed to an
-    /// external account during a user withdrawal — a frozen, closed or missing fee account would
-    /// otherwise break *user* exits. They leave only via `withdraw_protocol_fees`.
-    pub accrued_fees: u64,
     /// Mirrors `mint.decimals`, validated at registration. Needed for `transfer_checked`.
     pub decimals: u8,
     /// Gates *entry* only: deposits, channel creation, and locking funds. It must never gate
