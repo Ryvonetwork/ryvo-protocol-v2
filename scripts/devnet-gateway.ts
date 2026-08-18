@@ -61,6 +61,8 @@ import {
   ensureCompDef,
   sealAndQueue,
   stageBatch,
+  stagingTxCount,
+  supportsTxV1,
 } from "../tests-arcium/clearing-client";
 
 // ------------------------------------------------------------------ configuration
@@ -274,12 +276,15 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     const batches: RouteRecord[][] = [];
     for (let i = 0; i < records.length; i += N) batches.push(records.slice(i, i + N));
     // Stage all, then queue all, then wait for all — the MPC runs the batches back to back.
+    const v1 = await supportsTxV1(program, payer);
+    const perBatch = 1 + (v1 ? stagingTxCount(ROUTE_SLOTS).v1 : stagingTxCount(ROUTE_SLOTS).legacy);
     const staged = await pmap(batches, async (b, k) => {
       const staging = await stageBatch(program, payer, BigInt(Date.now()) * 100n + BigInt(k), KIND_ROUTE, buildRouteBatch(b));
-      stats.tx.stage += 1 + Math.ceil(ROUTE_SLOTS / 30); // open+create, then slot chunks
+      stats.tx.stage += perBatch; // open+create, then slot chunks
       return { staging, count: b.length };
     }, 2);
-    console.log(`    staged ${batches.length} batches (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+    console.log(`    staged ${batches.length} batches in ${v1 ? "v1 (4,096 B)" : "legacy (1,232 B)"} transactions, ${perBatch} tx per batch (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+    if (!v1) console.log(`    (transaction v1 not active on this cluster; with it staging would be ${1 + stagingTxCount(ROUTE_SLOTS).v1} tx per batch)`);
     const queued = [];
     for (const s of staged) {
       queued.push({ ...s, ...(await sealAndQueue(program, payer, s.staging, KIND_ROUTE, s.count)) });

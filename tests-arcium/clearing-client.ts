@@ -26,6 +26,7 @@ import {
   getLookupTableAddress,
 } from "@arcium-hq/client";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
+import { sendV1 } from "./txv1";
 import {
   KIND_ROUTE,
   KIND_UNILATERAL,
@@ -100,8 +101,30 @@ export const STAGING_SPACE = 8 + 48 + ROUTE_SLOTS * SLOT;
 export const clearingPda = (programId: PublicKey, staging: PublicKey) =>
   PublicKey.findProgramAddressSync([Buffer.from("clearing"), staging.toBuffer()], programId)[0];
 
-/** Slots per legacy transaction: 30 × 32 = 960 bytes of instruction data. */
-const SLOTS_PER_TX = 30;
+/** Slots per legacy transaction: 30 × 32 = 960 bytes of instruction data (1,232-byte packet). */
+const SLOTS_PER_LEGACY_TX = 30;
+/** Slots per v1 transaction: 120 × 32 = 3,840 bytes of instruction data (4,096-byte packet). */
+const SLOTS_PER_V1_TX = 120;
+
+let v1Support: boolean | undefined;
+/**
+ * Transaction v1 (SIMD-0296/0385) quadruples the packet, cutting staging transactions ~4×.
+ * It is feature-gated; probe once per process with a real send and fall back to legacy.
+ * Set RYVO_TX_V1=0 to force legacy, RYVO_TX_V1=1 to force v1.
+ */
+export async function supportsTxV1(program: Program<RyvoProtocol>, payer: Keypair): Promise<boolean> {
+  if (process.env.RYVO_TX_V1 === "0") return false;
+  if (process.env.RYVO_TX_V1 === "1") return true;
+  if (v1Support !== undefined) return v1Support;
+  try {
+    await sendV1(program.provider.connection, [SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: payer.publicKey, lamports: 1 })], [payer], { computeUnitLimit: 20_000 });
+    v1Support = true;
+  } catch (e: any) {
+    v1Support = false;
+    if (!/version is unsupported/i.test(String(e?.message))) console.warn("v1 probe failed for a reason other than the gate:", String(e?.message).slice(0, 120));
+  }
+  return v1Support;
+}
 
 /**
  * create_account + open_staging in one transaction, then stage_slots in chunks. The buffer is
@@ -133,19 +156,25 @@ export async function stageBatch(
     .signers([relayer, stagingKp])
     .rpc();
   const total = slots.length / SLOT;
-  const sends: Promise<string>[] = [];
-  for (let s = 0; s < total; s += SLOTS_PER_TX) {
-    const chunk = slots.subarray(s * SLOT, Math.min(s + SLOTS_PER_TX, total) * SLOT);
-    sends.push(
-      program.methods
-        .stageSlots(s, chunk)
-        .accounts({ relayer: relayer.publicKey, staging })
-        .signers([relayer])
-        .rpc(),
-    );
+  const useV1 = await supportsTxV1(program, relayer);
+  const per = useV1 ? SLOTS_PER_V1_TX : SLOTS_PER_LEGACY_TX;
+  const sends: Promise<unknown>[] = [];
+  for (let s = 0; s < total; s += per) {
+    const chunk = slots.subarray(s * SLOT, Math.min(s + per, total) * SLOT);
+    if (useV1) {
+      const ix = await program.methods.stageSlots(s, chunk).accounts({ relayer: relayer.publicKey, staging }).instruction();
+      sends.push(sendV1(program.provider.connection, [ix], [relayer], { computeUnitLimit: 50_000 }));
+    } else {
+      sends.push(program.methods.stageSlots(s, chunk).accounts({ relayer: relayer.publicKey, staging }).signers([relayer]).rpc());
+    }
   }
   await Promise.all(sends);
   return staging;
+}
+
+/** Staging transactions a batch of `slots` needs under each format (for reporting). */
+export function stagingTxCount(slots: number): { legacy: number; v1: number } {
+  return { legacy: Math.ceil(slots / SLOTS_PER_LEGACY_TX), v1: Math.ceil(slots / SLOTS_PER_V1_TX) };
 }
 
 export function arciumEnv() {
