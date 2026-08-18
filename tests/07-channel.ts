@@ -348,9 +348,14 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     await assertSolvent();
   });
 
-  it("clamps the release to locked_balance when pending exceeds it", async () => {
-    // The invariant-6 case: request the full lock, then cooperatively release most of it, so the
-    // pending amount now exceeds what remains locked.
+  it("supersedes an outstanding request on cooperative release", async () => {
+    // Note what this does NOT test. `execute_unlock_channel_funds` releases
+    // `min(pending_unlock_amount, locked_balance)`, but that clamp is unreachable in v1:
+    // `request_unlock` already enforces `amount <= locked_balance`, and the only instruction that
+    // reduces `locked_balance` is cooperative unlock, which zeroes the pending request as it goes.
+    // So whenever a request is outstanding, the lock can only have grown — `released` always equals
+    // `pending`. The clamp goes live in v2, when settlement debits `locked_balance` without
+    // touching the request; the partial-release and zero-release cases must be tested there.
     const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
 
     await program.methods
@@ -378,7 +383,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     expect(c.pendingUnlockAmount.toNumber()).to.equal(0);
     await assertSolvent();
 
-    // Re-request more than remains, then confirm the release clamps to locked_balance.
+    // The request is gone, so the payer must start a fresh timelock for what remains.
     await program.methods
       .requestUnlockChannelFunds(new anchor.BN(5 * ONE))
       .accounts(payerOp(payer, channel))
