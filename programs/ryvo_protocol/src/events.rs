@@ -101,3 +101,49 @@ pub struct ChannelFundsUnlocked {
     pub remaining_locked: u64,
     pub cooperative: bool,
 }
+
+// --- clearing ---
+
+#[event]
+pub struct BatchQueued {
+    pub staging: Pubkey,
+    pub clearing_result: Pubkey,
+    pub kind: u8,
+    pub count: u16,
+    pub computation_offset: u64,
+}
+
+#[event]
+pub struct BatchCleared {
+    pub staging: Pubkey,
+    pub kind: u8,
+    pub count: u16,
+    pub verified_count: u16,
+}
+
+#[event]
+pub struct ChannelSettled {
+    pub channel: Pubkey,
+    pub channel_id: u64,
+    pub target_cumulative: u64,
+    /// `min(target - settled, locked)`. Zero means the record was a no-op skip.
+    pub moved: u64,
+    pub settled_cumulative: u64,
+    pub locked_balance: u64,
+}
+
+#[event]
+pub struct RouteSettled {
+    pub channel_ag: Pubkey,
+    pub channel_gp: Pubkey,
+    pub channel_ag_id: u64,
+    pub channel_gp_id: u64,
+    pub moved_ag: u64,
+    pub moved_gp: u64,
+}
+
+#[event]
+pub struct BatchClearingFailed {
+    pub staging: Pubkey,
+    pub kind: u8,
+}

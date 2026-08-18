@@ -53,8 +53,12 @@ describe("ryvo_protocol / step 0: toolchain", () => {
     const accounts = program.idl.types.filter((t) =>
       (program.idl.accounts ?? []).some((a) => a.name === t.name),
     );
+    // Exempt: the singleton config (checked in Rust); Arcium's own signer PDA (not ours to
+    // shape); and the staging buffer, which is a per-batch scratch account that is closed for
+    // rent once settled — it never holds funds and never outlives a batch.
+    const exempt = new Set(["config", "arciumsigneraccount", "stagingbuffer"]);
     for (const t of accounts) {
-      if (normalize(t.name) === "config") continue; // singleton, checked separately in Rust
+      if (exempt.has(normalize(t.name))) continue;
       const fields = (t.type as any).fields ?? [];
       // Anchor's TS layer camelCases IDL names and strips the leading underscore, so compare
       // normalized.

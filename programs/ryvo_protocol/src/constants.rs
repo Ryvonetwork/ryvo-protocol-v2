@@ -22,6 +22,10 @@ pub const BALANCE_SEED: &str = "balance";
 #[constant]
 pub const CHANNEL_SEED: &str = "channel";
 
+
+#[constant]
+pub const CLEARING_SEED: &str = "clearing";
+
 // Domain-separation tags.
 
 /// Preimage tag for the deployment-scoped message domain:

@@ -54,4 +54,36 @@ pub enum RyvoError {
     InvalidMessageDomain,
     #[msg("Commitment amount must strictly increase")]
     CommitmentAmountMustIncrease,
+
+    // --- clearing ---
+    #[msg("Staging kind is not unilateral or route")]
+    InvalidStagingKind,
+    #[msg("Staged data is malformed or out of bounds")]
+    InvalidStagingData,
+    #[msg("Staging buffer is sealed")]
+    StagingSealed,
+    #[msg("Batch has not been cleared by Arcium yet")]
+    BatchNotCleared,
+    #[msg("Batch already has a recorded verdict")]
+    BatchAlreadyCleared,
+    #[msg("Batch still has verified records that were not applied")]
+    BatchNotFullyApplied,
+    #[msg("Settlement account list does not match the indices")]
+    InvalidSettlementAccounts,
+    #[msg("Settlement index is out of range for this batch")]
+    InvalidSettlementIndex,
+    #[msg("Record was not verified by the circuit")]
+    RecordNotVerified,
+    #[msg("Record was already applied in this batch")]
+    RecordAlreadyApplied,
+    #[msg("Channel account does not match the staged channel id")]
+    SettlementChannelMismatch,
+    #[msg("Staged signer does not match the channel authorized signer")]
+    SettlementSignerMismatch,
+    #[msg("Balance account is not the payee balance for this channel")]
+    SettlementBalanceMismatch,
+    #[msg("Route legs do not chain through the same gateway and mint")]
+    SettlementRouteMismatch,
+    #[msg("The Arcium computation was aborted or its output failed verification")]
+    AbortedComputation,
 }

@@ -1,10 +1,10 @@
-//! Ryvo protocol — unilateral cumulative payment channels on Solana.
+//! Ryvo protocol — unilateral cumulative payment channels on Solana, cleared through Arcium.
 //!
-//! v1 is the custody layer only: deposits, withdrawals, permanent participant identity and
-//! payment channels. It contains no signature verification and no settlement. Off-chain
-//! commitments are verified through Arcium MPC in v2; `commitment.rs` fixes the format now so
-//! that landing v2 requires neither a state migration nor re-signing live commitments.
+//! Custody (deposits, withdrawals, participants, channels) is plain Anchor. Clearing stages
+//! signed commitments on-chain, has an Arcium MPC circuit verify the signatures, and settles
+//! on-chain from the same sealed bytes — see `clearing`.
 
+pub mod clearing;
 pub mod commitment;
 pub mod constants;
 pub mod domain;
@@ -14,8 +14,14 @@ pub mod instructions;
 pub mod state;
 
 use anchor_lang::prelude::*;
+use arcium_anchor::prelude::*;
+use arcium_client::idl::arcium::types::{CircuitSource, OffChainCircuitSource};
+use arcium_macros::circuit_hash;
 
+pub use clearing::*;
+pub use commitment::{KIND_ROUTE, KIND_UNILATERAL};
 pub use constants::*;
+use error::RyvoError;
 #[allow(unused_imports)]
 pub use events::*;
 #[allow(unused_imports)]
@@ -25,12 +31,7 @@ pub use state::*;
 
 declare_id!("7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ");
 
-/// Plain `#[program]`, not `#[arcium_program]`. Anchor instruction discriminators are
-/// `sha256("global:<name>")[..8]` and account discriminators `sha256("account:<Name>")[..8]`,
-/// both independent of which program macro is used — so v2 can switch to `#[arcium_program]`
-/// without changing a single discriminator or account layout. The benefit is that v1 tests run
-/// under a plain local validator instead of requiring the 2-node Arcium Docker localnet.
-#[program]
+#[arcium_program]
 pub mod ryvo_protocol {
     #[allow(unused_imports)]
     use super::*;
@@ -132,5 +133,120 @@ pub mod ryvo_protocol {
         amount: u64,
     ) -> Result<()> {
         instructions::channel::cooperative_unlock_channel_funds_handler(ctx, amount)
+    }
+
+    // --- clearing: one-time setup ---
+
+    pub fn init_arcium_signer(ctx: Context<InitArciumSigner>) -> Result<()> {
+        clearing::init_arcium_signer_handler(ctx)
+    }
+
+    /// `circuit_url = None` means the circuit bytes are uploaded on-chain afterwards (localnet).
+    /// `Some(url)` registers a publicly fetchable `.arcis` whose SHA-256 must equal the hash
+    /// baked in at build time — the compiled circuits are ~1.5–3 MB, far too large to rent
+    /// on-chain, so this is the only sane path on devnet/mainnet.
+    pub fn init_clear_unilateral_comp_def(
+        ctx: Context<InitClearUnilateralCompDef>,
+        circuit_url: Option<String>,
+    ) -> Result<()> {
+        let source = circuit_url.map(|url| {
+            CircuitSource::OffChain(OffChainCircuitSource {
+                source: url,
+                hash: circuit_hash!("clear_unilateral"),
+            })
+        });
+        init_computation_def(ctx.accounts, source)?;
+        Ok(())
+    }
+
+    pub fn init_clear_route_comp_def(
+        ctx: Context<InitClearRouteCompDef>,
+        circuit_url: Option<String>,
+    ) -> Result<()> {
+        let source = circuit_url.map(|url| {
+            CircuitSource::OffChain(OffChainCircuitSource {
+                source: url,
+                hash: circuit_hash!("clear_route"),
+            })
+        });
+        init_computation_def(ctx.accounts, source)?;
+        Ok(())
+    }
+
+    // --- clearing: staging ---
+
+    pub fn open_staging(ctx: Context<OpenStaging>, batch_seq: u64, kind: u8) -> Result<()> {
+        clearing::open_staging_handler(ctx, batch_seq, kind)
+    }
+
+    pub fn stage_slots(ctx: Context<StageSlots>, slot_offset: u16, data: Vec<u8>) -> Result<()> {
+        clearing::stage_slots_handler(ctx, slot_offset, data)
+    }
+
+    pub fn seal_and_queue_unilateral(
+        ctx: Context<SealAndQueueUnilateral>,
+        computation_offset: u64,
+        count: u16,
+    ) -> Result<()> {
+        clearing::seal_and_queue_unilateral_handler(ctx, computation_offset, count)
+    }
+
+    pub fn seal_and_queue_route(
+        ctx: Context<SealAndQueueRoute>,
+        computation_offset: u64,
+        count: u16,
+    ) -> Result<()> {
+        clearing::seal_and_queue_route_handler(ctx, computation_offset, count)
+    }
+
+    // --- clearing: callbacks (invoked by Arcium) ---
+
+    #[arcium_callback(encrypted_ix = "clear_unilateral")]
+    pub fn clear_unilateral_callback(
+        ctx: Context<ClearUnilateralCallback>,
+        output: SignedComputationOutputs<ClearUnilateralOutput>,
+    ) -> Result<()> {
+        if let SignedComputationOutputs::Failure(_) = output {
+            return clearing::record_failure(&mut ctx.accounts.clearing_result);
+        }
+        let bits = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account,
+        ) {
+            Ok(ClearUnilateralOutput { field_0 }) => field_0,
+            Err(_) => return Err(RyvoError::AbortedComputation.into()),
+        };
+        clearing::record_bitmap(&mut ctx.accounts.clearing_result, &bits, KIND_UNILATERAL)
+    }
+
+    #[arcium_callback(encrypted_ix = "clear_route")]
+    pub fn clear_route_callback(
+        ctx: Context<ClearRouteCallback>,
+        output: SignedComputationOutputs<ClearRouteOutput>,
+    ) -> Result<()> {
+        if let SignedComputationOutputs::Failure(_) = output {
+            return clearing::record_failure(&mut ctx.accounts.clearing_result);
+        }
+        let bits = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account,
+        ) {
+            Ok(ClearRouteOutput { field_0 }) => field_0,
+            Err(_) => return Err(RyvoError::AbortedComputation.into()),
+        };
+        clearing::record_bitmap(&mut ctx.accounts.clearing_result, &bits, KIND_ROUTE)
+    }
+
+    // --- clearing: settlement (permissionless) ---
+
+    pub fn settle_channels<'info>(
+        ctx: Context<'info, SettleChannels<'info>>,
+        indices: Vec<u8>,
+    ) -> Result<()> {
+        clearing::settle_channels_handler(ctx, indices)
+    }
+
+    pub fn close_staging(ctx: Context<CloseStaging>) -> Result<()> {
+        clearing::close_staging_handler(ctx)
     }
 }

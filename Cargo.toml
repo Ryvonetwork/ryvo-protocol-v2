@@ -1,8 +1,5 @@
 [workspace]
-# `encrypted-ixs` is intentionally excluded from the v1 workspace: v1 has no Arcis circuit,
-# and excluding it keeps `anchor build` / `anchor test` off the Arcium localnet path. The
-# directory and Arcium.toml remain on disk untouched for v2, which re-adds it here.
-members = ["programs/*"]
+members = ["programs/*", "encrypted-ixs"]
 resolver = "2"
 
 [profile.release]
