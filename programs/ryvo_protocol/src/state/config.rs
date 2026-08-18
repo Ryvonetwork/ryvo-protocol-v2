@@ -20,11 +20,13 @@ pub struct Config {
     pub fee_recipient: Pubkey,
     /// Immutable. `SHA256(MESSAGE_DOMAIN_TAG || program_id || chain_id_le)[..16]`.
     pub message_domain: [u8; 16],
-    /// Immutable. Delay between `request_withdrawal` and `execute_withdrawal`.
-    pub withdrawal_timelock_seconds: i64,
     /// Immutable. Delay for both channel unlock and (in v2) authorized-signer rotation. One
     /// field rather than two: the two flows protect the same counterparty against the same
     /// class of surprise, so a single knob is easier to reason about and to audit.
+    ///
+    /// This is the protocol's only timelock. Withdrawals need none, because `available` is money
+    /// nobody else has a claim on — settlement is payable strictly from `locked_balance`, so the
+    /// payee's protection lives entirely on the unlock path, which is where the collateral is.
     pub channel_timelock_seconds: i64,
     /// Withdrawal fee in basis points, `0..=MAX_FEE_BPS`.
     pub fee_bps: u16,

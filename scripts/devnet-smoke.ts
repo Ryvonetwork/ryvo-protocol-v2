@@ -5,8 +5,8 @@
  * participants, deposit, open a channel with a derived Arcis signer, lock, unlock, withdraw.
  *
  * Idempotent where it can be. `initialize` runs once per deployment — Config is a singleton PDA
- * with no close instruction, so its parameters, including both immutable timelocks, are fixed for
- * the life of this program id on devnet.
+ * with no close instruction, so its parameters, including the immutable channel timelock, are
+ * fixed for the life of this program id on devnet.
  *
  *   npx ts-mocha -p ./tsconfig.json -t 900000 scripts/devnet-smoke.ts
  */
@@ -27,9 +27,8 @@ import * as os from "os";
 import { deriveArcisSigner, deriveMessageDomain } from "../tests/commitment-client";
 
 const DEVNET_CHAIN_ID = 1;
-// Devnet-only, and permanent for this deployment: fast enough that integration tests are not
-// painful. A production deployment would use materially longer values.
-const WITHDRAWAL_TIMELOCK = 0;
+// Devnet-only, and permanent for this deployment. The channel unlock delay is the protocol's
+// only timelock; withdrawals are immediate because settlement cannot reach free balance.
 const CHANNEL_TIMELOCK = 10;
 const FEE_BPS = 30;
 const ONE = 1_000_000;
@@ -93,7 +92,6 @@ describe("ryvo_protocol devnet smoke", function () {
         .initialize(
           DEVNET_CHAIN_ID,
           FEE_BPS,
-          new anchor.BN(WITHDRAWAL_TIMELOCK),
           new anchor.BN(CHANNEL_TIMELOCK),
           payer.publicKey,
           payer.publicKey,
@@ -210,11 +208,6 @@ describe("ryvo_protocol devnet smoke", function () {
   });
 
   it("opens a channel whose signer is derived, not the wallet address", async () => {
-    await program.methods
-      .updateInboundChannelPolicy({ permissionless: {} } as never)
-      .accounts({ owner: payeeParty.owner.publicKey, participant: payeeParty.participant })
-      .signers([payeeParty.owner]).rpc();
-
     channel = pda.channel(payerParty.participant, payeeParty.participant, mint);
     const signer = deriveArcisSigner(payerParty.owner.secretKey.slice(0, 32), channel, 0);
 
@@ -224,7 +217,6 @@ describe("ryvo_protocol devnet smoke", function () {
         payerOwner: payerParty.owner.publicKey,
         payerParticipant: payerParty.participant,
         payeeParticipant: payeeParty.participant,
-        payeeOwner: null,
         mint,
         tokenConfig: pda.tokenConfig(mint),
         payerBalance: payerParty.balance,
@@ -279,31 +271,23 @@ describe("ryvo_protocol devnet smoke", function () {
     expect(c.lockedBalance.toNumber()).to.equal(0);
   });
 
-  it("withdraws net of fee and leaves the vault solvent", async () => {
-    await program.methods
-      .requestWithdrawal(new anchor.BN(50 * ONE))
-      .accounts({
-        owner: payerParty.owner.publicKey, config: pda.config(),
-        participant: payerParty.participant, mint, balance: payerParty.balance,
-        destination: payerParty.ata, vault: pda.vault(mint),
-      })
-      .signers([payerParty.owner]).rpc();
-
+  it("withdraws immediately, net of fee, leaving the vault solvent", async () => {
     const ataBefore = await getAccount(connection, payerParty.ata, "confirmed", TOKEN_PROGRAM_ID);
     await program.methods
-      .executeWithdrawal()
+      .withdraw(new anchor.BN(50 * ONE))
       .accounts({
-        config: pda.config(), mint, tokenConfig: pda.tokenConfig(mint), vault: pda.vault(mint),
-        participant: payerParty.participant, balance: payerParty.balance,
-        destination: payerParty.ata, tokenProgram: TOKEN_PROGRAM_ID,
+        owner: payerParty.owner.publicKey, config: pda.config(),
+        participant: payerParty.participant, mint,
+        tokenConfig: pda.tokenConfig(mint), vault: pda.vault(mint),
+        balance: payerParty.balance, destination: payerParty.ata,
+        tokenProgram: TOKEN_PROGRAM_ID,
       })
-      .rpc();
+      .signers([payerParty.owner]).rpc();
     const ataAfter = await getAccount(connection, payerParty.ata, "confirmed", TOKEN_PROGRAM_ID);
 
     const fee = Math.floor((50 * ONE * FEE_BPS) / 10_000);
     expect(Number(ataAfter.amount - ataBefore.amount)).to.equal(50 * ONE - fee);
 
-    // vault == available + locked + accrued_fees
     const vaultAcc = await getAccount(connection, pda.vault(mint), "confirmed", TOKEN_PROGRAM_ID);
     const tc = await program.account.tokenConfig.fetch(pda.tokenConfig(mint));
     const bal = await program.account.balance.fetch(payerParty.balance);

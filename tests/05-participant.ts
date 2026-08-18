@@ -41,7 +41,7 @@ describe("ryvo_protocol / step 5: participants", () => {
       .rpc();
   };
 
-  it("registers an identity at the owner-derived PDA, consent-required by default", async () => {
+  it("registers an identity at the owner-derived PDA", async () => {
     const owner = Keypair.generate();
     await register(owner);
 
@@ -49,7 +49,6 @@ describe("ryvo_protocol / step 5: participants", () => {
       seeds.participant(program.programId, owner.publicKey),
     );
     expect(p.owner.toBase58()).to.equal(owner.publicKey.toBase58());
-    expect(p.inboundChannelPolicy).to.deep.equal({ consentRequired: {} });
   });
 
   it("leaves the singleton config byte-identical, proving no global counter", async () => {
@@ -70,33 +69,4 @@ describe("ryvo_protocol / step 5: participants", () => {
     await expectReject(register(owner));
   });
 
-  it("lets only the owner change their own policy, and round-trips all three values", async () => {
-    const owner = Keypair.generate();
-    await register(owner);
-    const participant = seeds.participant(program.programId, owner.publicKey);
-
-    const stranger = Keypair.generate();
-    await fund(provider, stranger.publicKey, 2);
-    await expectReject(
-      program.methods
-        .updateInboundChannelPolicy({ permissionless: {} })
-        .accounts({ owner: stranger.publicKey, participant })
-        .signers([stranger])
-        .rpc(),
-    );
-
-    for (const policy of [
-      { permissionless: {} },
-      { disabled: {} },
-      { consentRequired: {} },
-    ]) {
-      await program.methods
-        .updateInboundChannelPolicy(policy as never)
-        .accounts({ owner: owner.publicKey, participant })
-        .signers([owner])
-        .rpc();
-      const p = await program.account.participant.fetch(participant);
-      expect(p.inboundChannelPolicy).to.deep.equal(policy);
-    }
-  });
 });

@@ -10,7 +10,6 @@ pub struct ConfigInitialized {
     pub chain_id: u16,
     pub message_domain: [u8; 16],
     pub fee_bps: u16,
-    pub withdrawal_timelock_seconds: i64,
     pub channel_timelock_seconds: i64,
 }
 
@@ -56,12 +55,6 @@ pub struct ParticipantInitialized {
 }
 
 #[event]
-pub struct InboundChannelPolicyUpdated {
-    pub participant: Pubkey,
-    pub policy: u8,
-}
-
-#[event]
 pub struct BalanceOpened {
     pub balance: Pubkey,
     pub participant: Pubkey,
@@ -79,31 +72,13 @@ pub struct Deposited {
 }
 
 #[event]
-pub struct WithdrawalRequested {
-    pub balance: Pubkey,
-    pub participant: Pubkey,
-    pub mint: Pubkey,
-    pub amount: u64,
-    pub destination: Pubkey,
-    pub unlock_at: i64,
-}
-
-#[event]
-pub struct WithdrawalCancelled {
-    pub balance: Pubkey,
-    pub participant: Pubkey,
-    pub mint: Pubkey,
-    pub amount_cancelled: u64,
-}
-
-#[event]
 pub struct Withdrawn {
     pub balance: Pubkey,
     pub participant: Pubkey,
     pub mint: Pubkey,
-    /// Amount actually debited: `min(pending_withdrawal_amount, available)`. May be less than
-    /// the requested amount, or zero, if settlement consumed the balance first.
-    pub gross_amount: u64,
+    /// Debited from `available` in full — settlement cannot reach this balance, so there is no
+    /// residual case.
+    pub amount: u64,
     pub fee_amount: u64,
     pub net_amount: u64,
     pub destination: Pubkey,

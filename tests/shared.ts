@@ -10,8 +10,11 @@ export const BPF_LOADER_UPGRADEABLE = new PublicKey(
   "BPFLoaderUpgradeab1e11111111111111111111111",
 );
 
-/** Timelocks the harness deploys with. Small so tests can wait them out for real. */
-export const WITHDRAWAL_TIMELOCK = 1;
+/**
+ * The protocol's only timelock, kept small so tests can wait it out for real. Withdrawals have
+ * none: settlement is payable strictly from a channel's locked collateral, so `available` is free
+ * money and `withdraw` is immediate.
+ */
 export const CHANNEL_TIMELOCK = 2;
 export const FEE_BPS = 30;
 export const CHAIN_ID = 0; // localnet
@@ -144,7 +147,6 @@ export async function ensureConfig(
     .initialize(
       CHAIN_ID,
       FEE_BPS,
-      new anchor.BN(WITHDRAWAL_TIMELOCK),
       new anchor.BN(CHANNEL_TIMELOCK),
       authority.publicKey,
       feeRecipient,

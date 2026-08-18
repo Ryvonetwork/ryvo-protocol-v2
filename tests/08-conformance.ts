@@ -297,10 +297,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         .initializeParticipant()
         .accounts({ owner: owner.publicKey, participant, systemProgram: SystemProgram.programId })
         .signers([owner]).rpc();
-      await program.methods
-        .updateInboundChannelPolicy({ permissionless: {} } as never)
-        .accounts({ owner: owner.publicKey, participant })
-        .signers([owner]).rpc();
 
       const balances = new Map<string, PublicKey>();
       const atas = new Map<string, PublicKey>();
@@ -342,7 +338,6 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
             payerOwner: from.owner.publicKey,
             payerParticipant: from.participant,
             payeeParticipant: to.participant,
-            payeeOwner: null,
             mint: m,
             tokenConfig: tokenConfigs.get(m.toBase58())!,
             payerBalance: from.balances.get(m.toBase58())!,
@@ -424,20 +419,15 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
             .signers([p.owner]).rpc();
         } else {
           const b = await program.account.balance.fetch(bal);
-          if (Number(b.pendingWithdrawalAmount) > 0) {
-            await program.methods
-              .cancelWithdrawal()
-              .accounts({ owner: p.owner.publicKey, participant: p.participant, balance: bal })
-              .signers([p.owner]).rpc();
-          } else if (Number(b.available) > 0) {
-            await program.methods
-              .requestWithdrawal(new anchor.BN(1 + rand(Number(b.available))))
-              .accounts({
-                owner: p.owner.publicKey, config: configPda, participant: p.participant,
-                mint: m, balance: bal, destination: p.atas.get(mk)!, vault: vaults.get(mk)!,
-              })
-              .signers([p.owner]).rpc();
-          } else continue;
+          if (Number(b.available) === 0) continue;
+          await program.methods
+            .withdraw(new anchor.BN(1 + rand(Number(b.available))))
+            .accounts({
+              owner: p.owner.publicKey, config: configPda, participant: p.participant,
+              mint: m, tokenConfig: tokenConfigs.get(mk)!, vault: vaults.get(mk)!,
+              balance: bal, destination: p.atas.get(mk)!, tokenProgram: TOKEN_PROGRAM_ID,
+            })
+            .signers([p.owner]).rpc();
         }
         applied++;
       } catch {

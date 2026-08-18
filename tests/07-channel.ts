@@ -4,6 +4,7 @@ import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
+  getAssociatedTokenAddressSync,
   mintTo,
   getAccount,
 } from "@solana/spl-token";
@@ -89,36 +90,22 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     return { owner, participant, balance };
   }
 
-  const setPolicy = (party: Party, policy: object) =>
-    program.methods
-      .updateInboundChannelPolicy(policy as never)
-      .accounts({ owner: party.owner.publicKey, participant: party.participant })
-      .signers([party.owner])
-      .rpc();
 
-  const createChannel = (
-    from: Party,
-    to: Party,
-    signer: PublicKey,
-    payeeSigner: Keypair | null,
-  ) => {
-    const builder = program.methods
+  const createChannel = (from: Party, to: Party, signer: PublicKey) =>
+    program.methods
       .createChannel(signer)
       .accounts({
         payerOwner: from.owner.publicKey,
         payerParticipant: from.participant,
         payeeParticipant: to.participant,
-        payeeOwner: payeeSigner ? payeeSigner.publicKey : null,
         mint,
         tokenConfig,
         payerBalance: from.balance,
         payeeBalance: to.balance,
         channel: seeds.channel(program.programId, from.participant, to.participant, mint),
         systemProgram: SystemProgram.programId,
-      });
-    const signers = payeeSigner ? [from.owner, payeeSigner] : [from.owner];
-    return builder.signers(signers);
-  };
+      })
+      .signers([from.owner]);
 
   const payerOp = (from: Party, channel: PublicKey) => ({
     payerOwner: from.owner.publicKey,
@@ -168,27 +155,26 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   }
 
   it("requires an explicit authorized signer", async () => {
-    await setPolicy(payee, { permissionless: {} });
     await expectReject(
-      createChannel(payer, payee, PublicKey.default, null).rpc(),
+      createChannel(payer, payee, PublicKey.default).rpc(),
       /InvalidAuthorizedSigner/,
     );
   });
 
   it("refuses a self-channel", async () => {
     await expectReject(
-      createChannel(payer, payer, payer.owner.publicKey, null).rpc(),
+      createChannel(payer, payer, payer.owner.publicKey).rpc(),
       /SelfChannelNotAllowed/,
     );
   });
 
-  it("creates a channel under the permissionless policy with no payee signature", async () => {
+  it("creates a channel with a derived signer and no payee involvement", async () => {
     const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
     // The real pattern: derive the signer for this channel from the agent's wallet seed at
     // epoch 0, rather than registering an arbitrary throwaway key.
     const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32), channel, 0);
     const signingKey = new PublicKey(signer.publicKey);
-    await createChannel(payer, payee, signingKey, null).rpc();
+    await createChannel(payer, payee, signingKey).rpc();
 
     const c = await program.account.channel.fetch(channel);
     expect(c.payer.toBase58()).to.equal(payer.participant.toBase58());
@@ -208,33 +194,15 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   });
 
   it("refuses a duplicate channel but allows the reverse direction", async () => {
-    await expectReject(createChannel(payer, payee, payer.owner.publicKey, null).rpc());
+    await expectReject(createChannel(payer, payee, payer.owner.publicKey).rpc());
 
     // Unidirectional: (payee -> payer) is a different account entirely.
-    await setPolicy(payer, { permissionless: {} });
-    await createChannel(payee, payer, payee.owner.publicKey, null).rpc();
+    await createChannel(payee, payer, payee.owner.publicKey).rpc();
     const reverse = seeds.channel(program.programId, payee.participant, payer.participant, mint);
     const c = await program.account.channel.fetch(reverse);
     expect(c.payer.toBase58()).to.equal(payee.participant.toBase58());
   });
 
-  it("honours consent-required and disabled inbound policies", async () => {
-    const other = await makeParty(0);
-
-    await setPolicy(other, { consentRequired: {} });
-    await expectReject(
-      createChannel(payer, other, payer.owner.publicKey, null).rpc(),
-      /InboundChannelConsentRequired/,
-    );
-    await createChannel(payer, other, payer.owner.publicKey, other.owner).rpc();
-
-    const third = await makeParty(0);
-    await setPolicy(third, { disabled: {} });
-    await expectReject(
-      createChannel(payer, third, payer.owner.publicKey, third.owner).rpc(),
-      /InboundChannelsDisabled/,
-    );
-  });
 
   it("refuses a channel when the payee has no balance for the mint", async () => {
     // This is the forward-compatibility guard: v2 settlement cannot create accounts, so a lane
@@ -275,19 +243,21 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   });
 
   it("keeps locked funds beyond the reach of a withdrawal", async () => {
+    // available is 60, locked is 40. Locked collateral lives on the Channel account, so a
+    // withdrawal can never see it.
     const b = await program.account.balance.fetch(payer.balance);
-    const ata = await createAssociatedTokenAccount(
-      provider.connection, payerWallet, mint, payer.owner.publicKey,
-      { commitment: "confirmed" }, TOKEN_PROGRAM_ID,
-    ).catch(async () => (await getAccount(provider.connection, seeds.vault(program.programId, mint))).address);
-
-    // available is 60, locked is 40: asking for 61 must fail.
+    // The payer's ATA already exists from the deposit in `makeParty`; derive it rather than
+    // trying to create it again.
+    const ata = getAssociatedTokenAddressSync(
+      mint, payer.owner.publicKey, false, TOKEN_PROGRAM_ID,
+    );
     await expectReject(
       program.methods
-        .requestWithdrawal(new anchor.BN(b.available.toNumber() + 1))
+        .withdraw(new anchor.BN(b.available.toNumber() + 1))
         .accounts({
           owner: payer.owner.publicKey, config: configPda, participant: payer.participant,
-          mint, balance: payer.balance, destination: ata, vault,
+          mint, tokenConfig, vault, balance: payer.balance, destination: ata,
+          tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([payer.owner])
         .rpc(),

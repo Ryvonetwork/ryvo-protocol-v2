@@ -5,16 +5,18 @@ use crate::error::RyvoError;
 use crate::events::{
     ChannelCreated, ChannelFundsLocked, ChannelFundsUnlocked, ChannelUnlockRequested,
 };
-use crate::state::{Balance, Channel, Config, InboundChannelPolicy, Participant, TokenConfig};
+use crate::state::{Balance, Channel, Config, Participant, TokenConfig};
 use anchor_lang::prelude::*;
 use anchor_spl::token::Mint;
 
-/// Open a one-way payment relationship.
+/// Open a one-way payment relationship. No payee involvement: opening a channel to someone costs
+/// them nothing and only enables paying them.
 ///
 /// Both parties' `Balance` accounts must already exist and are passed read-only. That is a
 /// forward-compatibility requirement, not a convenience: the v2 settlement applier cannot create
 /// accounts, so a channel whose payee has no balance for the mint would produce lanes that can
-/// never be applied, stranding funds until the unlock timelock.
+/// never be applied, stranding funds until the unlock timelock. `open_balance` lets the payer
+/// create the payee's balance for them, so this needs no coordination.
 ///
 /// `authorized_signer` is required rather than defaulting to the payer's wallet. Under
 /// Arcium-only settlement a commitment must be signed with SHA3-512 (ArcisEd25519), which a
@@ -37,9 +39,6 @@ pub struct CreateChannel<'info> {
         bump = payee_participant.bump,
     )]
     pub payee_participant: Box<Account<'info, Participant>>,
-
-    /// Required only when the payee's policy is `ConsentRequired`.
-    pub payee_owner: Option<Signer<'info>>,
 
     pub mint: Box<Account<'info, Mint>>,
 
@@ -92,24 +91,6 @@ pub fn create_channel_handler(
         authorized_signer != Pubkey::default(),
         RyvoError::InvalidAuthorizedSigner
     );
-
-    match ctx.accounts.payee_participant.inbound_channel_policy {
-        InboundChannelPolicy::Permissionless => {}
-        InboundChannelPolicy::ConsentRequired => {
-            let signer = ctx
-                .accounts
-                .payee_owner
-                .as_ref()
-                .ok_or(RyvoError::InboundChannelConsentRequired)?;
-            require!(
-                signer.key() == ctx.accounts.payee_participant.owner,
-                RyvoError::InboundChannelConsentRequired
-            );
-        }
-        InboundChannelPolicy::Disabled => {
-            return Err(RyvoError::InboundChannelsDisabled.into());
-        }
-    }
 
     let channel = &mut ctx.accounts.channel;
     channel.payer = ctx.accounts.payer_participant.key();

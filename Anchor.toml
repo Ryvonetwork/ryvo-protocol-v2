@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-ryvo_protocol = "4kRnxdszLpHvrLzi4EDyyTRAWqkdmANzSGFPqncr2uxc"
+ryvo_protocol = "7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ"
 
 [provider]
 cluster = "localnet"

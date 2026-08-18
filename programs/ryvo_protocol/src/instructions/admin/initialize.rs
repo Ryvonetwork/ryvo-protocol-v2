@@ -41,7 +41,6 @@ pub fn handler(
     ctx: Context<Initialize>,
     chain_id: u16,
     fee_bps: u16,
-    withdrawal_timelock_seconds: i64,
     channel_timelock_seconds: i64,
     initial_authority: Pubkey,
     fee_recipient: Pubkey,
@@ -52,10 +51,6 @@ pub fn handler(
     );
     require!(chain_id <= MAX_CHAIN_ID, RyvoError::InvalidChainId);
     require!(fee_bps <= MAX_FEE_BPS, RyvoError::InvalidFeeBps);
-    require!(
-        (0..=MAX_TIMELOCK_SECONDS).contains(&withdrawal_timelock_seconds),
-        RyvoError::InvalidTimelock
-    );
     require!(
         (0..=MAX_TIMELOCK_SECONDS).contains(&channel_timelock_seconds),
         RyvoError::InvalidTimelock
@@ -77,7 +72,6 @@ pub fn handler(
     config.pending_authority = Pubkey::default();
     config.fee_recipient = fee_recipient;
     config.message_domain = message_domain;
-    config.withdrawal_timelock_seconds = withdrawal_timelock_seconds;
     config.channel_timelock_seconds = channel_timelock_seconds;
     config.fee_bps = fee_bps;
     config.chain_id = chain_id;
@@ -90,7 +84,6 @@ pub fn handler(
         chain_id,
         message_domain,
         fee_bps,
-        withdrawal_timelock_seconds,
         channel_timelock_seconds,
     });
     Ok(())

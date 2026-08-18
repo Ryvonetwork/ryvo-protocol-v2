@@ -55,7 +55,6 @@ describe("ryvo_protocol / step 3: config and authority", () => {
 
   const CHAIN_ID = 0; // localnet
   const FEE_BPS = 30;
-  const WITHDRAWAL_TIMELOCK = 1;
   const CHANNEL_TIMELOCK = 2;
 
   // Deterministic so later test files can sign as the authority. See tests/shared.ts.
@@ -66,7 +65,6 @@ describe("ryvo_protocol / step 3: config and authority", () => {
   const init = (overrides: Partial<{
     chainId: number;
     feeBps: number;
-    withdrawalTimelock: number;
     channelTimelock: number;
     initialAuthority: PublicKey;
     feeRecipient: PublicKey;
@@ -77,7 +75,6 @@ describe("ryvo_protocol / step 3: config and authority", () => {
       .initialize(
         overrides.chainId ?? CHAIN_ID,
         overrides.feeBps ?? FEE_BPS,
-        new anchor.BN(overrides.withdrawalTimelock ?? WITHDRAWAL_TIMELOCK),
         new anchor.BN(overrides.channelTimelock ?? CHANNEL_TIMELOCK),
         overrides.initialAuthority ?? authority.publicKey,
         overrides.feeRecipient ?? feeRecipient.publicKey,
@@ -106,7 +103,6 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     for (const [label, o] of [
       ["chain_id 4", { chainId: 4 }],
       ["fee_bps 31", { feeBps: 31 }],
-      ["withdrawal timelock 30d+1", { withdrawalTimelock: 30 * 24 * 60 * 60 + 1 }],
       ["channel timelock 30d+1", { channelTimelock: 30 * 24 * 60 * 60 + 1 }],
       ["default authority", { initialAuthority: PublicKey.default }],
       ["default fee recipient", { feeRecipient: PublicKey.default }],
@@ -130,7 +126,6 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     expect(cfg.feeRecipient.toBase58()).to.equal(feeRecipient.publicKey.toBase58());
     expect(cfg.feeBps).to.equal(FEE_BPS);
     expect(cfg.chainId).to.equal(CHAIN_ID);
-    expect(cfg.withdrawalTimelockSeconds.toNumber()).to.equal(WITHDRAWAL_TIMELOCK);
     expect(cfg.channelTimelockSeconds.toNumber()).to.equal(CHANNEL_TIMELOCK);
 
     // The whole point of deriving rather than accepting it as an argument.
@@ -191,9 +186,6 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     // Immutables untouched.
     expect(after.chainId).to.equal(before.chainId);
     expect(Buffer.from(after.messageDomain)).to.deep.equal(Buffer.from(before.messageDomain));
-    expect(after.withdrawalTimelockSeconds.toNumber()).to.equal(
-      before.withdrawalTimelockSeconds.toNumber(),
-    );
     expect(after.channelTimelockSeconds.toNumber()).to.equal(
       before.channelTimelockSeconds.toNumber(),
     );

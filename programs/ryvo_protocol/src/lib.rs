@@ -23,7 +23,7 @@ pub use instructions::*;
 #[allow(unused_imports)]
 pub use state::*;
 
-declare_id!("4kRnxdszLpHvrLzi4EDyyTRAWqkdmANzSGFPqncr2uxc");
+declare_id!("7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ");
 
 /// Plain `#[program]`, not `#[arcium_program]`. Anchor instruction discriminators are
 /// `sha256("global:<name>")[..8]` and account discriminators `sha256("account:<Name>")[..8]`,
@@ -43,7 +43,6 @@ pub mod ryvo_protocol {
         ctx: Context<Initialize>,
         chain_id: u16,
         fee_bps: u16,
-        withdrawal_timelock_seconds: i64,
         channel_timelock_seconds: i64,
         initial_authority: Pubkey,
         fee_recipient: Pubkey,
@@ -52,14 +51,13 @@ pub mod ryvo_protocol {
             ctx,
             chain_id,
             fee_bps,
-            withdrawal_timelock_seconds,
             channel_timelock_seconds,
             initial_authority,
             fee_recipient,
         )
     }
 
-    /// Update the mutable subset only. `chain_id`, `message_domain` and both timelocks are
+    /// Update the mutable subset only. `chain_id`, `message_domain` and the channel timelock are
     /// deliberately unreachable from here.
     pub fn update_config(
         ctx: Context<UpdateConfig>,
@@ -101,13 +99,6 @@ pub mod ryvo_protocol {
         instructions::participant::initialize_participant_handler(ctx)
     }
 
-    pub fn update_inbound_channel_policy(
-        ctx: Context<UpdateInboundChannelPolicy>,
-        policy: InboundChannelPolicy,
-    ) -> Result<()> {
-        instructions::participant::update_inbound_channel_policy_handler(ctx, policy)
-    }
-
     // --- balances ---
 
     pub fn open_balance(ctx: Context<OpenBalance>) -> Result<()> {
@@ -118,19 +109,10 @@ pub mod ryvo_protocol {
         instructions::balance::deposit_handler(ctx, amount)
     }
 
-    /// Record intent to withdraw. Moves no funds — see the handler docs.
-    pub fn request_withdrawal(ctx: Context<RequestWithdrawal>, amount: u64) -> Result<()> {
-        instructions::balance::request_withdrawal_handler(ctx, amount)
-    }
-
-    pub fn cancel_withdrawal(ctx: Context<CancelWithdrawal>) -> Result<()> {
-        instructions::balance::cancel_withdrawal_handler(ctx)
-    }
-
-    /// Permissionless crank. Pays `min(pending, available)` to the destination fixed at request
-    /// time, so a user who lost their signing key can still be exited.
-    pub fn execute_withdrawal(ctx: Context<ExecuteWithdrawal>) -> Result<()> {
-        instructions::balance::execute_withdrawal_handler(ctx)
+    /// Withdraw unlocked balance, immediately. Safe without a timelock because settlement is
+    /// payable only from a channel's locked collateral, never from this balance.
+    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+        instructions::balance::withdraw_handler(ctx, amount)
     }
 
     // --- channels ---

@@ -160,10 +160,10 @@ mod tests {
     fn sample() -> Commitment {
         Commitment {
             message_domain: [
-                0x41, 0xf1, 0x01, 0xef, 0x15, 0xbf, 0xeb, 0x90, 0x0d, 0xa0, 0x75, 0x44, 0x4a, 0xb8,
-                0x51, 0x9b,
+                0x99, 0xc6, 0x70, 0xaf, 0x9d, 0xa7, 0x68, 0xbc, 0x42, 0x7a, 0x4b, 0x1b, 0x1b, 0x0f,
+                0x12, 0x67,
             ],
-            channel: Pubkey::from_str("4kRnxdszLpHvrLzi4EDyyTRAWqkdmANzSGFPqncr2uxc").unwrap(),
+            channel: Pubkey::from_str("7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ").unwrap(),
             target_cumulative: 1_000_000,
             signer_epoch: 0,
             expiry_unix: 0,
@@ -275,13 +275,13 @@ mod tests {
         let c = sample();
         assert_eq!(
             hex(&c.encode()),
-            "41f101ef15bfeb900da075444ab8519b010137b311845f47b1a30066a92b1705\
-             ca52dad2077fbc1fec841ac9b7084002ce4140420f0000000000000000000000\
+            "99c670af9da768bc427a4b1b1b0f126701015f169b2d9ed820c0eaf9c72740fa\
+             39e309e4fdd94c8cc5105bf66b53837ed0cf40420f0000000000000000000000\
              000000000000",
         );
         assert_eq!(
             hex(&c.digest()),
-            "b0e290d75c13c223a772941556de31e2178a71578af11e3cbfc1ab76ad5370ad",
+            "dde0727db01c86c1f5bdbf04696d654b20d24a26e81030a97726eab3b60469c9",
         );
     }
 }

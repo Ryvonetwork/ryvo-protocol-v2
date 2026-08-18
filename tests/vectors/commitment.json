@@ -1,6 +1,6 @@
 {
   "_comment": "Golden vectors shared by the Rust program and the TypeScript client. Both assert against this file, so a field added on one side without the other fails a test immediately rather than silently producing signatures nothing can verify. Regenerate only when deliberately bumping the format version.",
-  "programId": "4kRnxdszLpHvrLzi4EDyyTRAWqkdmANzSGFPqncr2uxc",
+  "programId": "7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ",
   "kind": 1,
   "version": 1,
   "canonicalLen": 70,
@@ -8,21 +8,21 @@
   "digestTag": "ryvo-commitment-v1",
   "domainTag": "ryvo-message-domain-v1",
   "messageDomains": [
-    { "chainId": 0, "domain": "b011acfe81f90eee49d89d874a282f0f" },
-    { "chainId": 1, "domain": "41f101ef15bfeb900da075444ab8519b" },
-    { "chainId": 2, "domain": "c87958167d81fae932fbc8ea49b8ee75" },
-    { "chainId": 3, "domain": "90c64e762897307fe8f2863cc93fcf58" }
+    { "chainId": 0, "domain": "0de1b72579266ec25e497ceb2eeb417c" },
+    { "chainId": 1, "domain": "99c670af9da768bc427a4b1b1b0f1267" },
+    { "chainId": 2, "domain": "f20411035caf34a0ca8b82c6a05878c1" },
+    { "chainId": 3, "domain": "44607c32778bf3b0a1519de2cb7e02e6" }
   ],
   "commitments": [
     {
       "name": "baseline: chain 1, 1e6 target, epoch 0, no expiry",
-      "messageDomain": "41f101ef15bfeb900da075444ab8519b",
-      "channel": "4kRnxdszLpHvrLzi4EDyyTRAWqkdmANzSGFPqncr2uxc",
+      "messageDomain": "99c670af9da768bc427a4b1b1b0f1267",
+      "channel": "7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ",
       "targetCumulative": "1000000",
       "signerEpoch": 0,
       "expiryUnix": "0",
-      "encoded": "41f101ef15bfeb900da075444ab8519b010137b311845f47b1a30066a92b1705ca52dad2077fbc1fec841ac9b7084002ce4140420f0000000000000000000000000000000000",
-      "digest": "b0e290d75c13c223a772941556de31e2178a71578af11e3cbfc1ab76ad5370ad"
+      "encoded": "99c670af9da768bc427a4b1b1b0f126701015f169b2d9ed820c0eaf9c72740fa39e309e4fdd94c8cc5105bf66b53837ed0cf40420f0000000000000000000000000000000000",
+      "digest": "dde0727db01c86c1f5bdbf04696d654b20d24a26e81030a97726eab3b60469c9"
     }
   ]
 }

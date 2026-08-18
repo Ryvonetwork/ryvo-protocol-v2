@@ -34,23 +34,11 @@ pub enum RyvoError {
     #[msg("Requested amount exceeds accrued protocol fees")]
     InsufficientProtocolFees,
 
-    // --- participant / channel policy ---
-    #[msg("Payee requires consent for inbound channels")]
-    InboundChannelConsentRequired,
-    #[msg("Payee has disabled inbound channels")]
-    InboundChannelsDisabled,
-
     // --- balance / withdrawal ---
     #[msg("Amount must be greater than zero")]
     AmountMustBePositive,
     #[msg("Insufficient available balance")]
     InsufficientBalance,
-    #[msg("A withdrawal is already pending for this token")]
-    WithdrawalAlreadyPending,
-    #[msg("No withdrawal is pending for this token")]
-    NoWithdrawalPending,
-    #[msg("Withdrawal timelock has not elapsed")]
-    WithdrawalLocked,
     #[msg("Withdrawal destination is not permitted")]
     InvalidWithdrawalDestination,
 

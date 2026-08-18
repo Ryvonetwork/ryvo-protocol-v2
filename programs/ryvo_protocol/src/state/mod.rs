@@ -22,10 +22,10 @@ mod tests {
     fn account_sizes_are_pinned() {
         // 8-byte Anchor discriminator is added on top of INIT_SPACE by `#[account(space = ..)]`
         // call sites, so these figures are the payload only.
-        assert_eq!(Config::INIT_SPACE, 32 + 32 + 32 + 16 + 8 + 8 + 2 + 2 + 1 + 128);
-        assert_eq!(Participant::INIT_SPACE, 32 + 1 + 1 + 96);
+        assert_eq!(Config::INIT_SPACE, 32 + 32 + 32 + 16 + 8 + 2 + 2 + 1 + 128);
+        assert_eq!(Participant::INIT_SPACE, 32 + 1 + 96);
         assert_eq!(TokenConfig::INIT_SPACE, 32 + 32 + 8 + 1 + 1 + 1 + 96);
-        assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 8 + 8 + 32 + 1 + 96);
+        assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 1 + 96);
         assert_eq!(
             Channel::INIT_SPACE,
             32 + 32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 96
@@ -51,8 +51,11 @@ mod tests {
         }
     }
 
+    /// `Balance` holds nothing but free money and its identity. No pending-withdrawal state,
+    /// because a withdrawal is immediate — settlement cannot reach `available`, so there is
+    /// nothing for a timelock to protect.
     #[test]
-    fn inbound_channel_policy_is_one_byte() {
-        assert_eq!(InboundChannelPolicy::INIT_SPACE, 1);
+    fn balance_carries_no_pending_withdrawal_state() {
+        assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 1 + 96);
     }
 }
