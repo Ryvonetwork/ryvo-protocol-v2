@@ -110,7 +110,10 @@ pub struct Deposit<'info> {
 
 pub fn deposit_handler(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     require!(amount > 0, RyvoError::AmountMustBePositive);
-    require!(ctx.accounts.token_config.enabled, RyvoError::TokenDisabled);
+    require!(
+        ctx.accounts.token_config.deposits_enabled,
+        RyvoError::TokenDepositsDisabled
+    );
 
     transfer_checked(
         CpiContext::new(

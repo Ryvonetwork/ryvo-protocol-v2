@@ -134,7 +134,7 @@ describe("ryvo_protocol devnet smoke", function () {
       .rpc();
 
     const tc = await program.account.tokenConfig.fetch(pda.tokenConfig(mint));
-    expect(tc.enabled).to.be.true;
+    expect(tc.depositsEnabled).to.be.true;
     expect(tc.decimals).to.equal(6);
     console.log("    mint:", mint.toBase58());
   });
@@ -238,7 +238,6 @@ describe("ryvo_protocol devnet smoke", function () {
     config: pda.config(),
     channel,
     payerBalance: payerParty.balance,
-    tokenConfig: pda.tokenConfig(mint),
   });
 
   it("locks and then unlocks channel collateral through the timelock", async () => {

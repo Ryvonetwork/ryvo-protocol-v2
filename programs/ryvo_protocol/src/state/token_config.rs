@@ -17,10 +17,13 @@ pub struct TokenConfig {
     pub vault: Pubkey,
     /// Mirrors `mint.decimals`, validated at registration. Needed for `transfer_checked`.
     pub decimals: u8,
-    /// Gates *entry* only: deposits, channel creation, and locking funds. It must never gate
-    /// withdrawals, unlocks, or settlement — otherwise it is a fund-freeze switch rather than a
-    /// pause.
-    pub enabled: bool,
+    /// Gates `deposit` and nothing else.
+    ///
+    /// Deliberately narrow. Turning it off stops the protocol taking on *new* exposure to a mint
+    /// that has become problematic, while leaving everyone already inside free to move, lock,
+    /// unlock and withdraw. Gating those too would stop a user using funds they had already
+    /// committed, which is a freeze wearing a pause's name.
+    pub deposits_enabled: bool,
     pub bump: u8,
     pub _reserved: [u8; 96],
 }

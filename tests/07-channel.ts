@@ -112,7 +112,6 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     config: configPda,
     channel,
     payerBalance: from.balance,
-    tokenConfig,
   });
 
   before(async () => {

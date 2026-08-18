@@ -70,9 +70,12 @@ pub mod ryvo_protocol {
         instructions::admin::token::register_token_handler(ctx)
     }
 
-    /// Pause or resume *entry* for a mint: deposits, channel creation, locking. Never exits.
-    pub fn set_token_enabled(ctx: Context<SetTokenEnabled>, enabled: bool) -> Result<()> {
-        instructions::admin::token::set_token_enabled_handler(ctx, enabled)
+    /// Stop or resume deposits for a mint. Touches nothing else, so it can never trap funds.
+    pub fn set_token_deposit_enabled(
+        ctx: Context<SetTokenDepositEnabled>,
+        deposits_enabled: bool,
+    ) -> Result<()> {
+        instructions::admin::token::set_token_deposit_enabled_handler(ctx, deposits_enabled)
     }
 
     // --- participants ---

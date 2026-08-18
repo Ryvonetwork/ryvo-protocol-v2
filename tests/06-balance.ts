@@ -134,12 +134,12 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     await expectReject(deposit(0).rpc(), /AmountMustBePositive/);
 
     await program.methods
-      .setTokenEnabled(false)
+      .setTokenDepositEnabled(false)
       .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
       .signers([authority]).rpc();
-    await expectReject(deposit(ONE).rpc(), /TokenDisabled/);
+    await expectReject(deposit(ONE).rpc(), /TokenDepositsDisabled/);
     await program.methods
-      .setTokenEnabled(true)
+      .setTokenDepositEnabled(true)
       .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
       .signers([authority]).rpc();
   });
@@ -206,15 +206,15 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     // The freeze question: `enabled` gates entry only. If it gated withdrawal, the authority
     // could strand user funds.
     await program.methods
-      .setTokenEnabled(false)
+      .setTokenDepositEnabled(false)
       .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
       .signers([authority]).rpc();
 
-    await expectReject(deposit(ONE).rpc(), /TokenDisabled/);
+    await expectReject(deposit(ONE).rpc(), /TokenDepositsDisabled/);
     await withdraw(ONE).rpc(); // must still succeed
 
     await program.methods
-      .setTokenEnabled(true)
+      .setTokenDepositEnabled(true)
       .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
       .signers([authority]).rpc();
     await assertSolvent();

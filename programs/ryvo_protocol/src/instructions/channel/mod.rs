@@ -86,7 +86,6 @@ pub fn create_channel_handler(
         ctx.accounts.payer_participant.key() != ctx.accounts.payee_participant.key(),
         RyvoError::SelfChannelNotAllowed
     );
-    require!(ctx.accounts.token_config.enabled, RyvoError::TokenDisabled);
     require!(
         authorized_signer != Pubkey::default(),
         RyvoError::InvalidAuthorizedSigner
@@ -153,13 +152,11 @@ pub struct PayerChannelOp<'info> {
         bump = payer_balance.bump,
     )]
     pub payer_balance: Box<Account<'info, Balance>>,
-
-    #[account(
-        seeds = [TOKEN_CONFIG_SEED.as_bytes(), channel.mint.as_ref()],
-        bump = token_config.bump,
-    )]
-    pub token_config: Box<Account<'info, TokenConfig>>,
 }
+
+// No `token_config` here. It was only ever read for the deposit gate, and the channel's existence
+// already proves the mint was allowlisted when it was opened — so carrying it would be an account
+// lock per transaction bought for nothing.
 
 /// Move funds from shared available balance into this channel's lock.
 ///
@@ -167,7 +164,6 @@ pub struct PayerChannelOp<'info> {
 /// `locked_balance`. Locked funds cannot be withdrawn and cannot fund another channel.
 pub fn lock_channel_funds_handler(ctx: Context<PayerChannelOp>, amount: u64) -> Result<()> {
     require!(amount > 0, RyvoError::AmountMustBePositive);
-    require!(ctx.accounts.token_config.enabled, RyvoError::TokenDisabled);
     require!(
         amount <= ctx.accounts.payer_balance.available,
         RyvoError::InsufficientBalance

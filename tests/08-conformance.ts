@@ -395,7 +395,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
             .lockChannelFunds(new anchor.BN(amt * ONE))
             .accounts({
               payerOwner: p.owner.publicKey, payerParticipant: p.participant, config: configPda,
-              channel: ch.key, payerBalance: bal, tokenConfig: tokenConfigs.get(mk)!,
+              channel: ch.key, payerBalance: bal,
             })
             .signers([p.owner]).rpc();
         } else if (op === 2) {
@@ -407,7 +407,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
             .requestUnlockChannelFunds(new anchor.BN(c.lockedBalance.toString()))
             .accounts({
               payerOwner: p.owner.publicKey, payerParticipant: p.participant, config: configPda,
-              channel: ch.key, payerBalance: bal, tokenConfig: tokenConfigs.get(mk)!,
+              channel: ch.key, payerBalance: bal,
             })
             .signers([p.owner]).rpc();
         } else {

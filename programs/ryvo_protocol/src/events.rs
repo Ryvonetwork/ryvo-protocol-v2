@@ -31,9 +31,9 @@ pub struct TokenRegistered {
 }
 
 #[event]
-pub struct TokenEnabledChanged {
+pub struct TokenDepositEnabledChanged {
     pub mint: Pubkey,
-    pub enabled: bool,
+    pub deposits_enabled: bool,
 }
 
 #[event]

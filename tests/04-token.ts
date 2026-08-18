@@ -60,7 +60,7 @@ describe("ryvo_protocol / step 4: token registration and vault", () => {
       seeds.vault(program.programId, mint).toBase58(),
     );
     expect(tc.decimals).to.equal(6);
-    expect(tc.enabled).to.be.true;
+    expect(tc.depositsEnabled).to.be.true;
 
     // The vault must be owned by the per-mint token config, not the global config.
     const vault = await provider.connection.getTokenAccountBalance(
@@ -117,24 +117,24 @@ describe("ryvo_protocol / step 4: token registration and vault", () => {
     const before = await program.account.tokenConfig.fetch(tokenConfig);
 
     await program.methods
-      .setTokenEnabled(false)
+      .setTokenDepositEnabled(false)
       .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
       .signers([authority])
       .rpc();
 
     let tc = await program.account.tokenConfig.fetch(tokenConfig);
-    expect(tc.enabled).to.be.false;
+    expect(tc.depositsEnabled).to.be.false;
     expect(tc.mint.toBase58()).to.equal(before.mint.toBase58());
     expect(tc.vault.toBase58()).to.equal(before.vault.toBase58());
     expect(tc.decimals).to.equal(before.decimals);
 
     await program.methods
-      .setTokenEnabled(true)
+      .setTokenDepositEnabled(true)
       .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
       .signers([authority])
       .rpc();
     tc = await program.account.tokenConfig.fetch(tokenConfig);
-    expect(tc.enabled).to.be.true;
+    expect(tc.depositsEnabled).to.be.true;
   });
 
 });

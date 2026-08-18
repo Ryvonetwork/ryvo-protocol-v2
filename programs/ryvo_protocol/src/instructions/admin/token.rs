@@ -1,6 +1,6 @@
 use crate::constants::{CONFIG_SEED, MAX_MINT_DECIMALS, TOKEN_CONFIG_SEED, VAULT_SEED};
 use crate::error::RyvoError;
-use crate::events::{TokenEnabledChanged, TokenRegistered};
+use crate::events::{TokenDepositEnabledChanged, TokenRegistered};
 use crate::state::{Config, TokenConfig};
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount};
@@ -63,7 +63,7 @@ pub fn register_token_handler(ctx: Context<RegisterToken>) -> Result<()> {
     token_config.mint = mint.key();
     token_config.vault = ctx.accounts.vault.key();
     token_config.decimals = mint.decimals;
-    token_config.enabled = true;
+    token_config.deposits_enabled = true;
     token_config.bump = ctx.bumps.token_config;
     token_config._reserved = [0u8; 96];
 
@@ -76,7 +76,7 @@ pub fn register_token_handler(ctx: Context<RegisterToken>) -> Result<()> {
 }
 
 #[derive(Accounts)]
-pub struct SetTokenEnabled<'info> {
+pub struct SetTokenDepositEnabled<'info> {
     pub authority: Signer<'info>,
 
     #[account(
@@ -94,15 +94,20 @@ pub struct SetTokenEnabled<'info> {
     pub token_config: Box<Account<'info, TokenConfig>>,
 }
 
-/// Gates *entry* only. Callers must never consult this flag on a withdrawal, an unlock, or
-/// settlement — doing so would turn a pause into a fund freeze.
-pub fn set_token_enabled_handler(ctx: Context<SetTokenEnabled>, enabled: bool) -> Result<()> {
+/// Stop or resume deposits for one mint.
+///
+/// This is the only thing the flag does. Withdrawals, channel operations and settlement never
+/// consult it, so it can pause intake without ever trapping funds.
+pub fn set_token_deposit_enabled_handler(
+    ctx: Context<SetTokenDepositEnabled>,
+    deposits_enabled: bool,
+) -> Result<()> {
     let token_config = &mut ctx.accounts.token_config;
-    token_config.enabled = enabled;
+    token_config.deposits_enabled = deposits_enabled;
 
-    emit!(TokenEnabledChanged {
+    emit!(TokenDepositEnabledChanged {
         mint: token_config.mint,
-        enabled,
+        deposits_enabled,
     });
     Ok(())
 }

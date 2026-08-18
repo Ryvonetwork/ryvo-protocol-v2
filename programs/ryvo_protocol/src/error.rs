@@ -23,8 +23,8 @@ pub enum RyvoError {
     // --- token ---
     #[msg("Mint decimals exceed the permitted maximum")]
     InvalidTokenDecimals,
-    #[msg("Token is disabled for new deposits and channel funding")]
-    TokenDisabled,
+    #[msg("Deposits are disabled for this token")]
+    TokenDepositsDisabled,
     #[msg("Token mint does not match the account it was passed with")]
     InvalidTokenMint,
 
