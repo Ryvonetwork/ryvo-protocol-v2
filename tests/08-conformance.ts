@@ -189,61 +189,73 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
 
   // ------------------------------------------------------- derived signers
 
-  describe("derived channel signers", () => {
+  describe("agent signing key", () => {
     const walletSeed = () => Keypair.generate().secretKey.slice(0, 32);
     const channelA = Keypair.generate().publicKey;
     const channelB = Keypair.generate().publicKey;
 
-    it("is deterministic, so an agent stores one secret and recomputes the rest", () => {
+    it("is deterministic, so an agent stores one secret and recomputes the key", () => {
       const seed = walletSeed();
-      const a = deriveArcisSigner(seed, channelA);
-      const b = deriveArcisSigner(seed, channelA);
+      const a = deriveArcisSigner(seed);
+      const b = deriveArcisSigner(seed);
       expect(a.seed.toString("hex")).to.equal(b.seed.toString("hex"));
       expect(a.publicKey.toString("hex")).to.equal(b.publicKey.toString("hex"));
     });
 
-    it("gives a different key per channel, limiting blast radius to one channel", () => {
+    it("is one key per wallet, used on every channel that wallet opens", () => {
       const seed = walletSeed();
-      expect(deriveArcisSigner(seed, channelA).publicKey.toString("hex")).to.not.equal(
-        deriveArcisSigner(seed, channelB).publicKey.toString("hex"),
-      );
+      const signer = deriveArcisSigner(seed);
+      // The same pubkey is registered as authorized_signer on every channel — nothing about the
+      // derivation is channel-specific.
+      const commitA = {
+        messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
+        channel: channelA,
+        targetCumulative: 1n,
+        expiryUnix: 0n,
+      };
+      const commitB = { ...commitA, channel: channelB };
+
+      const a = signCommitment(seed, commitA);
+      const b = signCommitment(seed, commitB);
+      expect(a.publicKey.toString("hex")).to.equal(signer.publicKey.toString("hex"));
+      expect(b.publicKey.toString("hex")).to.equal(signer.publicKey.toString("hex"));
     });
 
-
     it("gives a different key per wallet", () => {
-      expect(deriveArcisSigner(walletSeed(), channelA).publicKey.toString("hex")).to.not.equal(
-        deriveArcisSigner(walletSeed(), channelA).publicKey.toString("hex"),
+      expect(deriveArcisSigner(walletSeed()).publicKey.toString("hex")).to.not.equal(
+        deriveArcisSigner(walletSeed()).publicKey.toString("hex"),
       );
     });
 
     it("never equals the wallet address", () => {
       const wallet = Keypair.generate();
-      const signer = deriveArcisSigner(wallet.secretKey.slice(0, 32), channelA);
+      const signer = deriveArcisSigner(wallet.secretKey.slice(0, 32));
       expect(signer.publicKey.toString("hex")).to.not.equal(
         Buffer.from(wallet.publicKey.toBytes()).toString("hex"),
       );
     });
 
     it("rejects a wallet seed of the wrong length rather than silently truncating", () => {
-      expect(() => deriveArcisSigner(new Uint8Array(64), channelA)).to.throw(/32 bytes/);
+      expect(() => deriveArcisSigner(new Uint8Array(64))).to.throw(/32 bytes/);
     });
 
-    it("signs a commitment that verifies under the registered signer, and only that one", () => {
-      const wallet = Keypair.generate();
-      const seed = wallet.secretKey.slice(0, 32);
-      const commitment = {
+    it("signs a commitment that is bound to one channel by the message, not the key", () => {
+      // One key signs for every channel, so channel binding comes from the channel address
+      // inside the signed message. A signature for channel A does not verify over channel B's
+      // digest even though the same key produced both.
+      const seed = walletSeed();
+      const base = {
         messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
         channel: channelA,
         targetCumulative: 500_000n,
-          expiryUnix: 0n,
+        expiryUnix: 0n,
       };
 
-      const { signature, publicKey, digest } = signCommitment(seed, commitment);
+      const { signature, publicKey, digest } = signCommitment(seed, base);
       expect(arcisVerify(signature, digest, publicKey)).to.be.true;
 
-      // Nor under the key for a different channel.
-      const otherChannel = deriveArcisSigner(seed, channelB);
-      expect(arcisVerify(signature, digest, otherChannel.publicKey)).to.be.false;
+      const otherDigest = commitmentDigest({ ...base, channel: channelB });
+      expect(arcisVerify(signature, otherDigest, publicKey)).to.be.false;
     });
   });
 

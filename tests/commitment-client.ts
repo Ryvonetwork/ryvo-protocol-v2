@@ -99,17 +99,18 @@ export function arcisPublicKey(seed: Uint8Array): Uint8Array {
 export const ARCIS_SIGNER_TAG = "ryvo-arcis-signer-v1";
 
 /**
- * Derive a channel's signing seed from an agent's wallet seed.
+ * Derive an agent's signing seed from its wallet seed.
  *
- * `SHA256(ARCIS_SIGNER_TAG || wallet_seed || channel)`
+ * `SHA256(ARCIS_SIGNER_TAG || wallet_seed)`
  *
- * Two properties:
+ * One key per wallet, used as `authorized_signer` on every channel that wallet opens. The agent
+ * backs up its wallet seed and nothing else; the signing key is recomputed on demand, so there is
+ * no key material to store, sync or lose.
  *
- * 1. **One secret.** The agent backs up its wallet seed and nothing else; every signing key is
- *    recomputed on demand, so there is no key material to store, sync or lose.
- * 2. **Per-channel blast radius.** A leaked signing key authorises payments on exactly one
- *    channel, capped at that channel's locked collateral. It cannot be replayed onto another
- *    channel, and it does not expose the wallet seed — SHA-256 is one-way.
+ * The blast radius of a leaked signing key is every channel it signs for, capped at the sum of
+ * their locked collateral. Deriving a distinct key per channel would narrow that only in the case
+ * where a single derived key leaks *without* the wallet seed — and since the seed must be present
+ * to derive at all, that case is rare enough not to pay for.
  *
  * There is no epoch and no rotation. A channel's signer is fixed for its life: changing it would
  * invalidate outstanding commitments, which would let a payer take service and then repudiate.
@@ -118,21 +119,12 @@ export const ARCIS_SIGNER_TAG = "ryvo-arcis-signer-v1";
  * functions would work, but it is a non-standard construction and gives one key two lives. This
  * costs one SHA-256 and avoids the question.
  */
-export function deriveArcisSignerSeed(
-  walletSeed: Uint8Array,
-  channel: PublicKey,
-): Buffer {
+export function deriveArcisSignerSeed(walletSeed: Uint8Array): Buffer {
   if (walletSeed.length !== 32) {
     throw new Error(`wallet seed must be 32 bytes, got ${walletSeed.length}`);
   }
   return createHash("sha256")
-    .update(
-      Buffer.concat([
-        Buffer.from(ARCIS_SIGNER_TAG),
-        Buffer.from(walletSeed),
-        channel.toBuffer(),
-      ]),
-    )
+    .update(Buffer.concat([Buffer.from(ARCIS_SIGNER_TAG), Buffer.from(walletSeed)]))
     .digest();
 }
 
@@ -143,21 +135,18 @@ export interface ArcisSigner {
   publicKey: Buffer;
 }
 
-/** Derive the signer an agent should register for a channel, and sign with. */
-export function deriveArcisSigner(
-  walletSeed: Uint8Array,
-  channel: PublicKey,
-): ArcisSigner {
-  const seed = deriveArcisSignerSeed(walletSeed, channel);
+/** Derive the signer an agent registers on every channel it opens, and signs with. */
+export function deriveArcisSigner(walletSeed: Uint8Array): ArcisSigner {
+  const seed = deriveArcisSignerSeed(walletSeed);
   return { seed, publicKey: Buffer.from(arcisEd25519.getPublicKey(seed)) };
 }
 
-/** Sign a commitment with the key derived for that channel. */
+/** Sign a commitment with the agent's signing key. */
 export function signCommitment(
   walletSeed: Uint8Array,
   commitment: Commitment,
 ): { signature: Buffer; publicKey: Buffer; digest: Buffer } {
-  const signer = deriveArcisSigner(walletSeed, commitment.channel);
+  const signer = deriveArcisSigner(walletSeed);
   const digest = commitmentDigest(commitment);
   return {
     signature: Buffer.from(arcisSign(digest, signer.seed)),

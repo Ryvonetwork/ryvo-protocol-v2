@@ -172,7 +172,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
     // The real pattern: derive the signer for this channel from the agent wallet seed,
     // rather than registering an arbitrary throwaway key.
-    const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32), channel);
+    const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32));
     const signingKey = new PublicKey(signer.publicKey);
     await createChannel(payer, payee, signingKey).rpc();
 
