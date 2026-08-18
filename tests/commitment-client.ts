@@ -1,29 +1,50 @@
 /**
- * TypeScript side of the commitment format and the ArcisEd25519 signer.
+ * TypeScript side of the commitment format, its Arcium slot layout, and the ArcisEd25519 signer.
  *
- * This is asserted byte-for-byte against the Rust implementation's golden vectors in
+ * Asserted byte-for-byte against the Rust implementation's golden vectors in
  * `tests/vectors/commitment.json`. A field added on one side without the other breaks the
  * conformance test rather than silently producing signatures nothing can verify.
  */
 import { PublicKey } from "@solana/web3.js";
 import { createHash } from "crypto";
+import { sha3_256 } from "@noble/hashes/sha3";
 import { ed25519 } from "@noble/curves/ed25519";
 import { arcisEd25519 as arcisEd25519Upstream } from "@arcium-hq/client";
 
-export const KIND_UNILATERAL_COMMITMENT = 0x01;
+export const KIND_UNILATERAL = 0x01;
+export const KIND_ROUTE = 0x02;
 export const VERSION = 0x01;
-export const CANONICAL_LEN = 58;
-/** Keeps in-circuit SHA3-512 at two permutations: 64 + |M| <= 143. */
-export const MAX_CANONICAL_LEN = 79;
+/** domain(16) | kind | version | channel_id(8) | target(8) */
+export const UNILATERAL_LEN = 34;
+/** domain(16) | kind | version | ag_id(8) | gp_id(8) | target_ag(8) | target_gp(8) */
+export const ROUTE_LEN = 50;
 
 export const MESSAGE_DOMAIN_TAG = "ryvo-message-domain-v1";
 export const COMMITMENT_DIGEST_TAG = "ryvo-commitment-v1";
 
-export interface Commitment {
+/** One signer, one channel: "I authorise `channelId` up to `targetCumulative`". */
+export interface UnilateralCommitment {
+  kind: typeof KIND_UNILATERAL;
   messageDomain: Buffer; // 16 bytes
-  channel: PublicKey;
+  channelId: bigint;
   targetCumulative: bigint;
 }
+
+/**
+ * Two signers, two channels: the agent authorises `channelAgId` up to `targetAg` and the gateway
+ * authorises `channelGpId` up to `targetGp`, over the same bytes. Settlement moves both legs in
+ * one instruction, so the gateway never holds the money and cannot withhold the payout.
+ */
+export interface RouteCommitment {
+  kind: typeof KIND_ROUTE;
+  messageDomain: Buffer;
+  channelAgId: bigint;
+  channelGpId: bigint;
+  targetAg: bigint;
+  targetGp: bigint;
+}
+
+export type Commitment = UnilateralCommitment | RouteCommitment;
 
 export function deriveMessageDomain(programId: PublicKey, chainId: number): Buffer {
   const chainLe = Buffer.alloc(2);
@@ -34,40 +55,112 @@ export function deriveMessageDomain(programId: PublicKey, chainId: number): Buff
     .subarray(0, 16);
 }
 
-export function encodeCommitment(c: Commitment): Buffer {
-  if (c.messageDomain.length !== 16) {
-    throw new Error(`messageDomain must be 16 bytes, got ${c.messageDomain.length}`);
-  }
-  const out = Buffer.alloc(CANONICAL_LEN);
-  c.messageDomain.copy(out, 0);
-  out[16] = KIND_UNILATERAL_COMMITMENT;
+function header(out: Buffer, domain: Buffer, kind: number) {
+  if (domain.length !== 16) throw new Error(`messageDomain must be 16 bytes, got ${domain.length}`);
+  domain.copy(out, 0);
+  out[16] = kind;
   out[17] = VERSION;
-  c.channel.toBuffer().copy(out, 18);
-  out.writeBigUInt64LE(c.targetCumulative, 50);
+}
+
+export function encodeCommitment(c: Commitment): Buffer {
+  if (c.kind === KIND_UNILATERAL) {
+    const out = Buffer.alloc(UNILATERAL_LEN);
+    header(out, c.messageDomain, KIND_UNILATERAL);
+    out.writeBigUInt64LE(c.channelId, 18);
+    out.writeBigUInt64LE(c.targetCumulative, 26);
+    return out;
+  }
+  const out = Buffer.alloc(ROUTE_LEN);
+  header(out, c.messageDomain, KIND_ROUTE);
+  out.writeBigUInt64LE(c.channelAgId, 18);
+  out.writeBigUInt64LE(c.channelGpId, 26);
+  out.writeBigUInt64LE(c.targetAg, 34);
+  out.writeBigUInt64LE(c.targetGp, 42);
   return out;
 }
 
-/** The 32 bytes an agent actually signs. */
+/** The 32 bytes an agent actually signs: `SHA3-256(tag || canonical)`. */
 export function commitmentDigest(c: Commitment): Buffer {
   return digestOf(encodeCommitment(c));
 }
 
 export function digestOf(canonical: Buffer): Buffer {
-  return createHash("sha256")
-    .update(Buffer.concat([Buffer.from(COMMITMENT_DIGEST_TAG), canonical]))
-    .digest();
+  return Buffer.from(sha3_256(Buffer.concat([Buffer.from(COMMITMENT_DIGEST_TAG), canonical])));
 }
 
 export function decodeCommitment(bytes: Buffer): Commitment {
-  if (bytes.length !== CANONICAL_LEN) throw new Error("bad length");
-  if (bytes[16] !== KIND_UNILATERAL_COMMITMENT) throw new Error("bad kind");
+  if (bytes.length !== UNILATERAL_LEN && bytes.length !== ROUTE_LEN) throw new Error("bad length");
   if (bytes[17] !== VERSION) throw new Error("bad version");
-  return {
-    messageDomain: Buffer.from(bytes.subarray(0, 16)),
-    channel: new PublicKey(bytes.subarray(18, 50)),
-    targetCumulative: bytes.readBigUInt64LE(50),
-  };
+  const messageDomain = Buffer.from(bytes.subarray(0, 16));
+  if (bytes[16] === KIND_UNILATERAL) {
+    if (bytes.length !== UNILATERAL_LEN) throw new Error("bad length");
+    return {
+      kind: KIND_UNILATERAL,
+      messageDomain,
+      channelId: bytes.readBigUInt64LE(18),
+      targetCumulative: bytes.readBigUInt64LE(26),
+    };
+  }
+  if (bytes[16] === KIND_ROUTE) {
+    if (bytes.length !== ROUTE_LEN) throw new Error("bad length");
+    return {
+      kind: KIND_ROUTE,
+      messageDomain,
+      channelAgId: bytes.readBigUInt64LE(18),
+      channelGpId: bytes.readBigUInt64LE(26),
+      targetAg: bytes.readBigUInt64LE(34),
+      targetGp: bytes.readBigUInt64LE(42),
+    };
+  }
+  throw new Error("bad kind");
 }
+
+// -------------------------------------------------------------------------------------------
+// Arcium slot layout. A staged batch is a byte buffer of 32-byte slots, one slot per circuit
+// parameter. Plaintext u128 = 16 LE bytes in the low half. Packed bytes follow arcis-compiler's
+// first-fit-decreasing rule for u8 fields: 26 bytes per slot, LE within the slot — a 32-byte key
+// is 2 slots (26 + 6), a 64-byte signature is 3 (26 + 26 + 12). Measured against a live circuit;
+// see the Rust `commitment.rs` for the mirror image, and do NOT use @arcium-hq/client's
+// createPacker for signatures (it overflows the second element for >26 same-width fields).
+
+export const SLOT = 32;
+export const BYTES_PER_SLOT = 26;
+export const PUBKEY_SLOTS = 2;
+export const SIG_SLOTS = 3;
+
+export function u128Slot(v: bigint): Buffer {
+  const b = Buffer.alloc(SLOT);
+  b.writeBigUInt64LE(v & ((1n << 64n) - 1n), 0);
+  b.writeBigUInt64LE(v >> 64n, 8);
+  return b;
+}
+
+/** `lo | hi << 64`; its LE bytes are `lo_le || hi_le`. */
+export const packPair = (lo: bigint, hi: bigint): bigint => lo | (hi << 64n);
+
+export function packBytesToSlots(bytes: Uint8Array): Buffer[] {
+  const out: Buffer[] = [];
+  for (let i = 0; i < bytes.length; i += BYTES_PER_SLOT) {
+    const s = Buffer.alloc(SLOT);
+    Buffer.from(bytes.subarray(i, Math.min(i + BYTES_PER_SLOT, bytes.length))).copy(s, 0);
+    out.push(s);
+  }
+  return out;
+}
+
+export function unpackPubkeySlots(slots: Buffer[]): Buffer {
+  return Buffer.concat([slots[0].subarray(0, 26), slots[1].subarray(0, 6)]);
+}
+
+/** The u128 slot(s) holding a commitment's body; their LE bytes are canonical bytes [18..]. */
+export function bodySlots(c: Commitment): bigint[] {
+  return c.kind === KIND_UNILATERAL
+    ? [packPair(c.channelId, c.targetCumulative)]
+    : [packPair(c.channelAgId, c.channelGpId), packPair(c.targetAg, c.targetGp)];
+}
+
+export const domainSlot = (messageDomain: Buffer): bigint =>
+  messageDomain.readBigUInt64LE(0) | (messageDomain.readBigUInt64LE(8) << 64n);
 
 /**
  * ArcisEd25519, re-exported from `@arcium-hq/client` rather than reconstructed here.

@@ -95,6 +95,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
       .createChannel(signer)
       .accounts({
         payerOwner: from.owner.publicKey,
+        config: configPda,
         payerParticipant: from.participant,
         payeeParticipant: to.participant,
         mint,
@@ -171,9 +172,15 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     // rather than registering an arbitrary throwaway key.
     const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32));
     const signingKey = new PublicKey(signer.publicKey);
+    const cfgBefore = await program.account.config.fetch(configPda);
     await createChannel(payer, payee, signingKey).rpc();
 
     const c = await program.account.channel.fetch(channel);
+    // The id comes from the global counter and the counter advances by exactly one.
+    expect(c.channelId.toString()).to.equal(cfgBefore.nextChannelId.toString());
+    expect(c.channelId.toNumber()).to.be.greaterThan(0);
+    const cfgAfter = await program.account.config.fetch(configPda);
+    expect(cfgAfter.nextChannelId.toNumber()).to.equal(cfgBefore.nextChannelId.toNumber() + 1);
     expect(c.payer.toBase58()).to.equal(payer.participant.toBase58());
     expect(c.payee.toBase58()).to.equal(payee.participant.toBase58());
     expect(c.mint.toBase58()).to.equal(mint.toBase58());
@@ -188,11 +195,15 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   it("refuses a duplicate channel but allows the reverse direction", async () => {
     await expectReject(createChannel(payer, payee, payer.owner.publicKey).rpc());
 
-    // Unidirectional: (payee -> payer) is a different account entirely.
+    // Unidirectional: (payee -> payer) is a different account entirely, with its own id.
     await createChannel(payee, payer, payee.owner.publicKey).rpc();
     const reverse = seeds.channel(program.programId, payee.participant, payer.participant, mint);
     const c = await program.account.channel.fetch(reverse);
     expect(c.payer.toBase58()).to.equal(payee.participant.toBase58());
+    const forward = await program.account.channel.fetch(
+      seeds.channel(program.programId, payer.participant, payee.participant, mint),
+    );
+    expect(c.channelId.toNumber()).to.equal(forward.channelId.toNumber() + 1);
   });
 
 

@@ -7,11 +7,11 @@ use anchor_lang::prelude::*;
 /// uses two channels. Permanent — there is no close instruction, which removes any
 /// close-and-reopen replay boundary.
 ///
-/// Because the PDA is derived from payer, payee and mint, the channel's own address commits to
-/// all three. That is why the signed commitment carries this address and there is no separate
-/// channel-binding hash: an account address is collision-free by construction, needs no truncation
-/// or birthday argument, is invertible for dispute forensics, and removes a derivation that would
-/// otherwise have to be mirrored bug-for-bug in Rust, TypeScript and an Arcis circuit.
+/// The PDA is derived from payer, payee and mint, so the address commits to all three. Signed
+/// commitments name the channel by `channel_id` (a global counter) rather than by that address:
+/// eight bytes instead of thirty-two keeps a staged record small enough to clear in bulk. The
+/// binding is transitive — `settle_channels` requires `staged_id == channel.channel_id` on the
+/// account it is handed — and safe because ids are never reused.
 #[account]
 #[derive(InitSpace)]
 pub struct Channel {
@@ -46,6 +46,8 @@ pub struct Channel {
     pub pending_unlock_amount: u64,
     /// Absolute deadline for the pending unlock.
     pub pending_unlock_at: i64,
+    /// Assigned from `Config.next_channel_id` at creation. Never 0, never reused.
+    pub channel_id: u64,
     pub bump: u8,
-    pub _reserved: [u8; 96],
+    pub _reserved: [u8; 88],
 }

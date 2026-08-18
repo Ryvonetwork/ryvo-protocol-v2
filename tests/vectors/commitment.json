@@ -1,11 +1,12 @@
 {
-  "_comment": "Golden vectors shared by the Rust program and the TypeScript client. Both assert against this file, so a field added on one side without the other fails a test immediately rather than silently producing signatures nothing can verify. Regenerate only when deliberately bumping the format version.",
+  "_comment": "Golden vectors shared by the Rust program and the TypeScript client. Both assert against this file, so a field added on one side without the other fails a test immediately rather than silently producing signatures nothing can verify. Digest is SHA3-256(digestTag || canonical). Regenerate only when deliberately bumping the format version.",
   "programId": "7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ",
-  "kind": 1,
   "version": 1,
-  "canonicalLen": 58,
-  "maxCanonicalLen": 79,
+  "kinds": { "unilateral": 1, "route": 2 },
+  "unilateralLen": 34,
+  "routeLen": 50,
   "digestTag": "ryvo-commitment-v1",
+  "digestAlgorithm": "sha3-256",
   "domainTag": "ryvo-message-domain-v1",
   "messageDomains": [
     { "chainId": 0, "domain": "0de1b72579266ec25e497ceb2eeb417c" },
@@ -15,12 +16,26 @@
   ],
   "commitments": [
     {
-      "name": "baseline: chain 1, 1e6 target",
+      "name": "unilateral: chain 1, channel 7, 1e6 target",
+      "kind": 1,
       "messageDomain": "99c670af9da768bc427a4b1b1b0f1267",
-      "channel": "7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ",
+      "channelId": "7",
       "targetCumulative": "1000000",
-      "encoded": "99c670af9da768bc427a4b1b1b0f126701015f169b2d9ed820c0eaf9c72740fa39e309e4fdd94c8cc5105bf66b53837ed0cf40420f0000000000",
-      "digest": "c40f694cd272cd1970b1e24b607898f0c286dd02316cf98652eca2158ff2fe33"
+      "encoded": "99c670af9da768bc427a4b1b1b0f12670101070000000000000040420f0000000000",
+      "digest": "52686ad6b6051d37c5591e62815dc581451ff568976769e1018eb0d72d7ce7eb",
+      "bodySlots": ["18446744073709551616000007"]
+    },
+    {
+      "name": "route: chain 1, 7 -> 9, 1e6 -> 990000",
+      "kind": 2,
+      "messageDomain": "99c670af9da768bc427a4b1b1b0f1267",
+      "channelAgId": "7",
+      "channelGpId": "9",
+      "targetAg": "1000000",
+      "targetGp": "990000",
+      "encoded": "99c670af9da768bc427a4b1b1b0f126702010700000000000000090000000000000040420f0000000000301b0f0000000000",
+      "digest": "e542843e915ee03bf3b12cb56881cc7832a28a99ea5d47f2585c4783ead0d3ce",
+      "bodySlots": ["166020696663385964551", "18262276632972456100840000"]
     }
   ]
 }

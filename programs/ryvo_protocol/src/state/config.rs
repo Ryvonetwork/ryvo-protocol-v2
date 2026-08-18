@@ -30,7 +30,12 @@ pub struct Config {
     pub channel_timelock_seconds: i64,
     /// Immutable deployment selector that feeds `message_domain`.
     pub chain_id: u16,
+    /// Next `Channel.channel_id` to hand out. Starts at 1; 0 is never a valid id. Commitments
+    /// name channels by this id rather than by their 32-byte address, which is what keeps a
+    /// staged record small enough to clear in bulk. Written only by `create_channel`, so
+    /// settlement never contends on it.
+    pub next_channel_id: u64,
     pub bump: u8,
-    /// Singleton, so reserved space is cheap — 128 bytes costs a fraction of a cent once.
-    pub _reserved: [u8; 128],
+    /// Singleton, so reserved space is cheap.
+    pub _reserved: [u8; 120],
 }

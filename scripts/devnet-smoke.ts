@@ -213,6 +213,7 @@ describe("ryvo_protocol devnet smoke", function () {
       .createChannel(new PublicKey(signer.publicKey))
       .accounts({
         payerOwner: payerParty.owner.publicKey,
+        config: pda.config(),
         payerParticipant: payerParty.participant,
         payeeParticipant: payeeParty.participant,
         mint,

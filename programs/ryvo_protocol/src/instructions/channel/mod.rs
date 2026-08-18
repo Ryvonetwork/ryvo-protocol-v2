@@ -27,6 +27,15 @@ pub struct CreateChannel<'info> {
     #[account(mut)]
     pub payer_owner: Signer<'info>,
 
+    /// Written: hands out the next `channel_id`. This is the only place settlement-unrelated
+    /// traffic takes a write lock on the singleton, and channel creation is rare.
+    #[account(
+        mut,
+        seeds = [CONFIG_SEED.as_bytes()],
+        bump = config.bump,
+    )]
+    pub config: Box<Account<'info, Config>>,
+
     #[account(
         seeds = [PARTICIPANT_SEED.as_bytes(), payer_owner.key().as_ref()],
         bump = payer_participant.bump,
@@ -90,7 +99,12 @@ pub fn create_channel_handler(
         RyvoError::InvalidAuthorizedSigner
     );
 
+    let config = &mut ctx.accounts.config;
+    let channel_id = config.next_channel_id;
+    config.next_channel_id = channel_id.checked_add(1).ok_or(RyvoError::MathOverflow)?;
+
     let channel = &mut ctx.accounts.channel;
+    channel.channel_id = channel_id;
     channel.payer = ctx.accounts.payer_participant.key();
     channel.payee = ctx.accounts.payee_participant.key();
     channel.mint = ctx.accounts.mint.key();
@@ -100,7 +114,7 @@ pub fn create_channel_handler(
     channel.pending_unlock_amount = 0;
     channel.pending_unlock_at = 0;
     channel.bump = ctx.bumps.channel;
-    channel._reserved = [0u8; 96];
+    channel._reserved = [0u8; 88];
 
     emit!(ChannelCreated {
         channel: channel.key(),
@@ -108,6 +122,7 @@ pub fn create_channel_handler(
         payee: channel.payee,
         mint: channel.mint,
         authorized_signer,
+        channel_id,
     });
     Ok(())
 }

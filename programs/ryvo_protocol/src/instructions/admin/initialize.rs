@@ -66,8 +66,9 @@ pub fn handler(
     config.message_domain = message_domain;
     config.channel_timelock_seconds = channel_timelock_seconds;
     config.chain_id = chain_id;
+    config.next_channel_id = 1;
     config.bump = ctx.bumps.config;
-    config._reserved = [0u8; 128];
+    config._reserved = [0u8; 120];
 
     emit!(ConfigInitialized {
         authority: initial_authority,

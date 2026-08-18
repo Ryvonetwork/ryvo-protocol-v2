@@ -43,6 +43,9 @@ anchor-spl = { version = "1.0.2", default-features = false, features = [
 # software `sha2` crate: the prior POC measured ~1M CU for 12.8KB there versus ~7k CU for the
 # syscall, and the settlement path hashes once per channel.
 solana-sha256-hasher = "3.1.0"
+# Host-side commitment digest (SHA3-256). No instruction calls it: the Arcis circuit computes the
+# same digest in-MPC and settlement reads the sealed staged bytes, so this never runs on-chain.
+sha3 = { version = "0.10", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

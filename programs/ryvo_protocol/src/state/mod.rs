@@ -22,13 +22,13 @@ mod tests {
     fn account_sizes_are_pinned() {
         // 8-byte Anchor discriminator is added on top of INIT_SPACE by `#[account(space = ..)]`
         // call sites, so these figures are the payload only.
-        assert_eq!(Config::INIT_SPACE, 32 + 32 + 16 + 8 + 2 + 1 + 128);
+        assert_eq!(Config::INIT_SPACE, 32 + 32 + 16 + 8 + 2 + 8 + 1 + 120);
         assert_eq!(Participant::INIT_SPACE, 32 + 1 + 96);
         assert_eq!(TokenConfig::INIT_SPACE, 32 + 32 + 1 + 1 + 1 + 96);
         assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 1 + 96);
         assert_eq!(
             Channel::INIT_SPACE,
-            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 1 + 96
+            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 1 + 88
         );
     }
 
@@ -42,7 +42,7 @@ mod tests {
             ("Participant", 96usize),
             ("TokenConfig", 96),
             ("Balance", 96),
-            ("Channel", 96),
+            ("Channel", 88),
         ] {
             assert!(
                 reserved >= MIN_RESERVED,

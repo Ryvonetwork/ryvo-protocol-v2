@@ -11,18 +11,24 @@ import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import { expect } from "chai";
 import * as fs from "fs";
 import {
-  CANONICAL_LEN,
-  MAX_CANONICAL_LEN,
+  KIND_ROUTE,
+  KIND_UNILATERAL,
+  ROUTE_LEN,
+  UNILATERAL_LEN,
   arcisPublicKey,
   arcisSign,
   arcisVerify,
+  bodySlots,
   commitmentDigest,
   decodeCommitment,
   deriveArcisSigner,
   deriveMessageDomain,
   encodeCommitment,
+  packBytesToSlots,
   signCommitment,
   standardEd25519,
+  unpackPubkeySlots,
+  type Commitment,
 } from "./commitment-client";
 import {
   CHAIN_ID,
@@ -55,21 +61,43 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
   // ---------------------------------------------------------------- conformance
 
   it("agrees with the Rust implementation on every golden vector", () => {
-    expect(vectors.canonicalLen).to.equal(CANONICAL_LEN);
-    expect(vectors.maxCanonicalLen).to.equal(MAX_CANONICAL_LEN);
+    expect(vectors.unilateralLen).to.equal(UNILATERAL_LEN);
+    expect(vectors.routeLen).to.equal(ROUTE_LEN);
+    expect(vectors.digestAlgorithm).to.equal("sha3-256");
 
     for (const v of vectors.commitments) {
-      const c = {
-        messageDomain: Buffer.from(v.messageDomain, "hex"),
-        channel: new PublicKey(v.channel),
-        targetCumulative: BigInt(v.targetCumulative),
-      };
+      const c: Commitment =
+        v.kind === KIND_UNILATERAL
+          ? {
+              kind: KIND_UNILATERAL,
+              messageDomain: Buffer.from(v.messageDomain, "hex"),
+              channelId: BigInt(v.channelId),
+              targetCumulative: BigInt(v.targetCumulative),
+            }
+          : {
+              kind: KIND_ROUTE,
+              messageDomain: Buffer.from(v.messageDomain, "hex"),
+              channelAgId: BigInt(v.channelAgId),
+              channelGpId: BigInt(v.channelGpId),
+              targetAg: BigInt(v.targetAg),
+              targetGp: BigInt(v.targetGp),
+            };
       expect(encodeCommitment(c).toString("hex"), `encode mismatch: ${v.name}`).to.equal(v.encoded);
       expect(commitmentDigest(c).toString("hex"), `digest mismatch: ${v.name}`).to.equal(v.digest);
-      // Round-trip through the decoder too.
-      const back = decodeCommitment(Buffer.from(v.encoded, "hex"));
-      expect(back.targetCumulative).to.equal(c.targetCumulative);
-      expect(back.channel.toBase58()).to.equal(c.channel.toBase58());
+      expect(bodySlots(c).map(String), `slot mismatch: ${v.name}`).to.deep.equal(v.bodySlots);
+      // The slots' LE bytes must be the canonical body verbatim: that is what the circuit hashes.
+      const enc = encodeCommitment(c);
+      const slotBytes = Buffer.concat(
+        bodySlots(c).map((x) => {
+          const b = Buffer.alloc(16);
+          b.writeBigUInt64LE(x & ((1n << 64n) - 1n), 0);
+          b.writeBigUInt64LE(x >> 64n, 8);
+          return b;
+        }),
+      );
+      expect(slotBytes.toString("hex")).to.equal(enc.subarray(18).toString("hex"));
+      // Round-trip through the decoder.
+      expect(decodeCommitment(Buffer.from(v.encoded, "hex"))).to.deep.equal(c);
     }
   });
 
@@ -86,22 +114,39 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     );
   });
 
-  it("keeps the canonical message inside the two-permutation SHA3-512 budget", () => {
-    // In-circuit Ed25519 hashes R || A || M through SHA3-512, whose rate is 72 bytes.
-    expect(64 + CANONICAL_LEN).to.be.at.most(64 + MAX_CANONICAL_LEN);
-    expect(Math.ceil((64 + CANONICAL_LEN) / 72)).to.equal(2);
+  it("packs keys and signatures into the slots the circuit unpacks", () => {
+    // 26 bytes per field-element slot, little-endian: a key is 2 slots, a signature 3.
+    const pk = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
+    const pks = packBytesToSlots(pk);
+    expect(pks.length).to.equal(2);
+    expect(pks[0].subarray(0, 26).toString("hex")).to.equal(pk.subarray(0, 26).toString("hex"));
+    expect(pks[1].subarray(0, 6).toString("hex")).to.equal(pk.subarray(26).toString("hex"));
+    expect(pks[0].subarray(26).every((b) => b === 0) && pks[1].subarray(6).every((b) => b === 0)).to.be.true;
+    expect(unpackPubkeySlots(pks).toString("hex")).to.equal(pk.toString("hex"));
+    const sig = Buffer.from(Array.from({ length: 64 }, (_, i) => 100 + i));
+    const sigs = packBytesToSlots(sig);
+    expect(sigs.length).to.equal(3);
+    expect(sigs[2].subarray(0, 12).toString("hex")).to.equal(sig.subarray(52).toString("hex"));
   });
 
   it("rejects malformed canonical messages", () => {
     const good = Buffer.from(vectors.commitments[0].encoded, "hex");
-    expect(() => decodeCommitment(good.subarray(0, CANONICAL_LEN - 1))).to.throw();
+    expect(() => decodeCommitment(good.subarray(0, UNILATERAL_LEN - 1))).to.throw();
     expect(() => decodeCommitment(Buffer.concat([good, Buffer.alloc(1)]))).to.throw();
+    // A unilateral-length message claiming to be a route, and vice versa.
     const badKind = Buffer.from(good);
-    badKind[16] = 0x02;
+    badKind[16] = KIND_ROUTE;
     expect(() => decodeCommitment(badKind)).to.throw();
+    const route = Buffer.from(vectors.commitments[1].encoded, "hex");
+    const routeAsUni = Buffer.from(route);
+    routeAsUni[16] = KIND_UNILATERAL;
+    expect(() => decodeCommitment(routeAsUni)).to.throw();
     const badVersion = Buffer.from(good);
     badVersion[17] = 0x02;
     expect(() => decodeCommitment(badVersion)).to.throw();
+    const unknownKind = Buffer.from(good);
+    unknownKind[16] = 0x03;
+    expect(() => decodeCommitment(unknownKind)).to.throw();
   });
 
   // ------------------------------------------------------------ ArcisEd25519
@@ -110,8 +155,9 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     const seed = standardEd25519.utils.randomSecretKey();
     const pub = arcisPublicKey(seed);
     const digest = commitmentDigest({
+      kind: KIND_UNILATERAL,
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
-      channel: seeds.config(program.programId),
+      channelId: 1n,
       targetCumulative: 12345n,
     });
 
@@ -131,7 +177,8 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     const seed = standardEd25519.utils.randomSecretKey();
     const digest = commitmentDigest({
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
-      channel: seeds.config(program.programId),
+      kind: KIND_UNILATERAL,
+      channelId: 1n,
       targetCumulative: 1n,
     });
 
@@ -174,7 +221,8 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     // And a signature made with that seed verifies only under the Arcis pubkey.
     const digest = commitmentDigest({
       messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
-      channel: seeds.config(program.programId),
+      kind: KIND_UNILATERAL,
+      channelId: 1n,
       targetCumulative: 7n,
     });
     const sig = arcisSign(digest, seed);
@@ -186,8 +234,8 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
 
   describe("agent signing key", () => {
     const walletSeed = () => Keypair.generate().secretKey.slice(0, 32);
-    const channelA = Keypair.generate().publicKey;
-    const channelB = Keypair.generate().publicKey;
+    const channelA = 11n;
+    const channelB = 12n;
 
     it("is deterministic, so an agent stores one secret and recomputes the key", () => {
       const seed = walletSeed();
@@ -202,12 +250,13 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       const signer = deriveArcisSigner(seed);
       // The same pubkey is registered as authorized_signer on every channel — nothing about the
       // derivation is channel-specific.
-      const commitA = {
+      const commitA: Commitment = {
+        kind: KIND_UNILATERAL,
         messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
-        channel: channelA,
+        channelId: channelA,
         targetCumulative: 1n,
       };
-      const commitB = { ...commitA, channel: channelB };
+      const commitB: Commitment = { ...commitA, channelId: channelB };
 
       const a = signCommitment(seed, commitA);
       const b = signCommitment(seed, commitB);
@@ -234,21 +283,52 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     });
 
     it("signs a commitment that is bound to one channel by the message, not the key", () => {
-      // One key signs for every channel, so channel binding comes from the channel address
-      // inside the signed message. A signature for channel A does not verify over channel B's
-      // digest even though the same key produced both.
+      // One key signs for every channel, so channel binding comes from the channel id inside
+      // the signed message. A signature for channel A does not verify over channel B's digest
+      // even though the same key produced both.
       const seed = walletSeed();
-      const base = {
+      const base: Commitment = {
+        kind: KIND_UNILATERAL,
         messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
-        channel: channelA,
+        channelId: channelA,
         targetCumulative: 500_000n,
       };
 
       const { signature, publicKey, digest } = signCommitment(seed, base);
       expect(arcisVerify(signature, digest, publicKey)).to.be.true;
 
-      const otherDigest = commitmentDigest({ ...base, channel: channelB });
+      const otherDigest = commitmentDigest({ ...base, channelId: channelB });
       expect(arcisVerify(signature, otherDigest, publicKey)).to.be.false;
+    });
+
+    it("co-signs one route message with two keys, each verifiable against its own key", () => {
+      // The gateway countersigns exactly the bytes the agent signed. Neither signature verifies
+      // under the other party's key, and neither verifies over a unilateral message with the same
+      // leading fields.
+      const agentSeed = walletSeed();
+      const gatewaySeed = walletSeed();
+      const route: Commitment = {
+        kind: KIND_ROUTE,
+        messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
+        channelAgId: channelA,
+        channelGpId: channelB,
+        targetAg: 500_000n,
+        targetGp: 495_000n,
+      };
+      const a = signCommitment(agentSeed, route);
+      const g = signCommitment(gatewaySeed, route);
+      expect(a.digest.toString("hex")).to.equal(g.digest.toString("hex"));
+      expect(arcisVerify(a.signature, a.digest, a.publicKey)).to.be.true;
+      expect(arcisVerify(g.signature, g.digest, g.publicKey)).to.be.true;
+      expect(arcisVerify(a.signature, a.digest, g.publicKey)).to.be.false;
+      expect(arcisVerify(g.signature, g.digest, a.publicKey)).to.be.false;
+      const uni = commitmentDigest({
+        kind: KIND_UNILATERAL,
+        messageDomain: route.messageDomain,
+        channelId: channelA,
+        targetCumulative: 500_000n,
+      });
+      expect(arcisVerify(a.signature, uni, a.publicKey)).to.be.false;
     });
   });
 
@@ -324,6 +404,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           .createChannel(Keypair.generate().publicKey)
           .accounts({
             payerOwner: from.owner.publicKey,
+            config: configPda,
             payerParticipant: from.participant,
             payeeParticipant: to.participant,
             mint: m,

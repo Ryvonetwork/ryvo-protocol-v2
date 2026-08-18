@@ -30,7 +30,8 @@ pub const CHANNEL_SEED: &str = "channel";
 pub const MESSAGE_DOMAIN_TAG: &str = "ryvo-message-domain-v1";
 
 /// Preimage tag for the commitment digest that agents actually sign:
-/// `SHA256(COMMITMENT_DIGEST_TAG || canonical_message)`.
+/// `SHA3_256(COMMITMENT_DIGEST_TAG || canonical_message)`. SHA3 because the Arcis circuit
+/// rebuilds this digest itself from the staged fields.
 #[constant]
 pub const COMMITMENT_DIGEST_TAG: &str = "ryvo-commitment-v1";
 
