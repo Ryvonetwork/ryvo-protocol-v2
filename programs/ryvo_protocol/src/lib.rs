@@ -29,7 +29,7 @@ pub use instructions::*;
 #[allow(unused_imports)]
 pub use state::*;
 
-declare_id!("7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ");
+declare_id!("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii");
 
 #[arcium_program]
 pub mod ryvo_protocol {

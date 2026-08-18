@@ -30,7 +30,7 @@ mod tests {
     /// if `declare_id!` ever changes without the message-domain implications being considered:
     /// changing the program id invalidates every previously signed commitment.
     fn program_id() -> Pubkey {
-        Pubkey::from_str("7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ").unwrap()
+        Pubkey::from_str("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii").unwrap()
     }
 
     #[test]
@@ -68,10 +68,10 @@ mod tests {
     #[test]
     fn golden_vectors() {
         let cases: [(u16, &str); 4] = [
-            (0, "0de1b72579266ec25e497ceb2eeb417c"),
-            (1, "99c670af9da768bc427a4b1b1b0f1267"),
-            (2, "f20411035caf34a0ca8b82c6a05878c1"),
-            (3, "44607c32778bf3b0a1519de2cb7e02e6"),
+            (0, "97b3122481121d96e2158a5da943a80a"),
+            (1, "6e7a83daf600a277e0703f39dd6b0b47"),
+            (2, "e6c060340a805c8b8a94661bceb23409"),
+            (3, "e1086bdb665b90fc3e267ee196158a0e"),
         ];
         for (chain_id, expected) in cases {
             assert_eq!(

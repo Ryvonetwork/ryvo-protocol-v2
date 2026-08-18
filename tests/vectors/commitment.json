@@ -1,18 +1,33 @@
 {
   "_comment": "Golden vectors shared by the Rust program and the TypeScript client. Both assert against this file, so a field added on one side without the other fails a test immediately rather than silently producing signatures nothing can verify. Digest is SHA3-256(digestTag || canonical). Regenerate only when deliberately bumping the format version.",
-  "programId": "7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ",
+  "programId": "DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii",
   "version": 1,
-  "kinds": { "unilateral": 1, "route": 2 },
+  "kinds": {
+    "unilateral": 1,
+    "route": 2
+  },
   "unilateralLen": 34,
   "routeLen": 50,
   "digestTag": "ryvo-commitment-v1",
   "digestAlgorithm": "sha3-256",
   "domainTag": "ryvo-message-domain-v1",
   "messageDomains": [
-    { "chainId": 0, "domain": "0de1b72579266ec25e497ceb2eeb417c" },
-    { "chainId": 1, "domain": "99c670af9da768bc427a4b1b1b0f1267" },
-    { "chainId": 2, "domain": "f20411035caf34a0ca8b82c6a05878c1" },
-    { "chainId": 3, "domain": "44607c32778bf3b0a1519de2cb7e02e6" }
+    {
+      "chainId": 0,
+      "domain": "97b3122481121d96e2158a5da943a80a"
+    },
+    {
+      "chainId": 1,
+      "domain": "6e7a83daf600a277e0703f39dd6b0b47"
+    },
+    {
+      "chainId": 2,
+      "domain": "e6c060340a805c8b8a94661bceb23409"
+    },
+    {
+      "chainId": 3,
+      "domain": "e1086bdb665b90fc3e267ee196158a0e"
+    }
   ],
   "commitments": [
     {
@@ -23,7 +38,9 @@
       "targetCumulative": "1000000",
       "encoded": "99c670af9da768bc427a4b1b1b0f12670101070000000000000040420f0000000000",
       "digest": "52686ad6b6051d37c5591e62815dc581451ff568976769e1018eb0d72d7ce7eb",
-      "bodySlots": ["18446744073709551616000007"]
+      "bodySlots": [
+        "18446744073709551616000007"
+      ]
     },
     {
       "name": "route: chain 1, 7 -> 9, 1e6 -> 990000",
@@ -35,7 +52,10 @@
       "targetGp": "990000",
       "encoded": "99c670af9da768bc427a4b1b1b0f126702010700000000000000090000000000000040420f0000000000301b0f0000000000",
       "digest": "e542843e915ee03bf3b12cb56881cc7832a28a99ea5d47f2585c4783ead0d3ce",
-      "bodySlots": ["166020696663385964551", "18262276632972456100840000"]
+      "bodySlots": [
+        "166020696663385964551",
+        "18262276632972456100840000"
+      ]
     }
   ]
 }
