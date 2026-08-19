@@ -51,7 +51,6 @@ import {
 } from "../tests/commitment-client";
 import {
   N_ROUTE,
-  ROUTE_SLOTS,
   RouteRecord,
   awaitClearing,
   bitmapBits,
@@ -172,7 +171,9 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     console.log(`    message_domain ${domain.toString("hex")} next_channel_id ${cfg.nextChannelId.toString()}`);
     await ensureArciumSigner(program, payer);
     const t0 = Date.now();
-    await ensureCompDef(program, provider, payer, "clear_unilateral", `${CIRCUIT_BASE_URL}/clear_unilateral.arcis`);
+    // The unilateral comp def is registered on demand (this smoke exercises routes only, and a
+    // deactivated-but-not-yet-closable comp def at that offset would make init fail).
+    if (process.env.RYVO_INIT_UNILATERAL) await ensureCompDef(program, provider, payer, "clear_unilateral", `${CIRCUIT_BASE_URL}/clear_unilateral.arcis`);
     await ensureCompDef(program, provider, payer, "clear_route", `${CIRCUIT_BASE_URL}/clear_route.arcis`);
     console.log(`    comp defs ready (${((Date.now() - t0) / 1000).toFixed(1)}s) — circuits at ${CIRCUIT_BASE_URL}`);
   });
@@ -279,7 +280,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     const t0 = Date.now();
     const v1 = await supportsTxV1(program, payer);
     console.log(`    staging in ${v1 ? "v1 (4,096 B)" : "legacy (1,232 B)"} transactions; N=${N_ROUTE} commitments per batch`);
-    if (!v1) console.log(`    (transaction v1 not active on this cluster; with it a full route batch would stage in ${stagingTxCount(ROUTE_SLOTS).v1} tx instead of ${stagingTxCount(ROUTE_SLOTS).legacy})`);
+    if (!v1) console.log(`    (transaction v1 not active on this cluster; with it a full route batch would stage in ${stagingTxCount(KIND_ROUTE).v1} tx instead of ${stagingTxCount(KIND_ROUTE).legacy})`);
     staging = await openStaging(program, payer, KIND_ROUTE);
     stats.tx.stage += 1; // create + open (once per buffer, not per batch)
     for (let first = 0, k = 0; first < records.length; first += N_ROUTE, k++) {
@@ -374,6 +375,23 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     console.log(`    providers paid ${expProvider.reduce((a, b) => a + b, 0) / ONE}, gateway fees ${expFee.reduce((a, b) => a + b, 0) / ONE}, vault ${Number(vaultAcc.amount) / ONE} == available ${Number(sumAvail) / ONE} + locked ${Number(sumLocked) / ONE}`);
 
     await closeStaging(program, payer, staging);
+    // Sweep the parties' unspent SOL back (their keypairs are throwaway); rent stays parked.
+    const parties = [...agents, gateway, ...providers];
+    let swept = 0;
+    for (let i = 0; i < parties.length; i += 6) {
+      const group = parties.slice(i, i + 6);
+      const tx = new anchor.web3.Transaction();
+      const signers: Keypair[] = [];
+      for (const p of group) {
+        const bal = await connection.getBalance(p.owner.publicKey);
+        if (bal <= 10_000) continue;
+        tx.add(SystemProgram.transfer({ fromPubkey: p.owner.publicKey, toPubkey: payer.publicKey, lamports: bal }));
+        signers.push(p.owner);
+        swept += bal;
+      }
+      if (signers.length) await retry(() => provider.sendAndConfirm(tx, signers), 5, "sweep");
+    }
+    console.log(`    swept ${(swept / 1e9).toFixed(4)} SOL of unspent party balances back to the wallet`);
     const solEnd = await connection.getBalance(payer.publicKey);
     const total = Object.values(stats.tx).reduce((a, b) => a + b, 0);
     console.log(`\n    ==== ${AGENTS} routed payments cleared ====`);

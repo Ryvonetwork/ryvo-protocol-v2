@@ -235,6 +235,14 @@ pub mod ryvo_protocol {
         clearing::stage_slots_handler(ctx, slot_offset, data)
     }
 
+    pub fn stage_channels<'info>(
+        ctx: Context<'info, StageChannels<'info>>,
+        col: u8,
+        start: u16,
+    ) -> Result<()> {
+        clearing::stage_channels_handler(ctx, col, start)
+    }
+
     pub fn seal_and_queue_unilateral(
         ctx: Context<SealAndQueueUnilateral>,
         computation_offset: u64,

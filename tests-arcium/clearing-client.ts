@@ -6,8 +6,9 @@
  *
  * A relayer owns one reusable staging buffer: `openStaging` once, then per batch
  * `stageBatch` (which resets the buffer in the first transaction) → `sealAndQueue` →
- * `awaitClearing` → `settle`. Keys are never staged: the program hands the circuit each staged
- * channel's `signer_slots` by account argument.
+ * `awaitClearing` → `settle`. Keys are never staged by the relayer: `stage_channels` names the
+ * `Channel` accounts and the program copies each one's address and `signer_slots` into the
+ * buffer's key columns, which `stage_slots` cannot reach.
  */
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
@@ -47,11 +48,19 @@ import { sendV1 } from "./txv1";
 /** Commitments per batch. Must equal `N_UNI` / `N_ROUTE` in the program and the circuit. */
 export const N_UNI = 64;
 export const N_ROUTE = 32;
-export const UNILATERAL_SLOTS_PER_RECORD = 1 + 1 + SIG_SLOTS; // id, channel, sig
-export const ROUTE_SLOTS_PER_RECORD = 2 + 2 + 2 * SIG_SLOTS; // ids, targets, 2 channels, 2 sigs
-export const UNILATERAL_SLOTS = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 320
-export const ROUTE_SLOTS = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 320
+/** Slots the relayer stages per commitment (the data columns). */
+export const UNILATERAL_DATA_SLOTS_PER_RECORD = 1 + SIG_SLOTS; // id, sig
+export const ROUTE_DATA_SLOTS_PER_RECORD = 2 + 2 * SIG_SLOTS; // ids, targets, 2 sigs
+export const UNILATERAL_DATA_SLOTS = N_UNI * UNILATERAL_DATA_SLOTS_PER_RECORD; // 256
+export const ROUTE_DATA_SLOTS = N_ROUTE * ROUTE_DATA_SLOTS_PER_RECORD; // 256
+/** Slots per commitment including the program-written key (2 per channel) and channel columns. */
+export const UNILATERAL_SLOTS_PER_RECORD = UNILATERAL_DATA_SLOTS_PER_RECORD + 2 + 1; // 7
+export const ROUTE_SLOTS_PER_RECORD = ROUTE_DATA_SLOTS_PER_RECORD + 4 + 2; // 14
+export const UNILATERAL_SLOTS = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 448
+export const ROUTE_SLOTS = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 448
 export const MAX_SLOTS = Math.max(UNILATERAL_SLOTS, ROUTE_SLOTS);
+/** Channel accounts per `stage_channels` call (program cap; ~31 accounts fit a legacy tx). */
+export const MAX_CHANNELS_PER_STAGE = 30;
 /** 8-byte discriminator + 48-byte header + MAX_SLOTS slots. Must equal `StagingBuffer::SPACE`. */
 export const STAGING_SPACE = 8 + 48 + MAX_SLOTS * SLOT;
 
@@ -69,6 +78,13 @@ export interface RouteRecord {
   gatewaySignature: Uint8Array;
 }
 
+/** A batch ready to stage: the data columns as bytes, and the channel accounts per column. */
+export interface Batch {
+  slots: Buffer;
+  /** `channels[col][i]` — col 0 = payer/agent channel, col 1 = gateway→provider channel (route). */
+  channels: PublicKey[][];
+}
+
 function padTo<T>(xs: T[], n: number): T[] {
   if (xs.length === 0 || xs.length > n) throw new Error(`batch must hold 1..${n} commitments, got ${xs.length}`);
   const out = [...xs];
@@ -78,31 +94,28 @@ function padTo<T>(xs: T[], n: number): T[] {
   return out;
 }
 
-/** Column-major: ids[N] | channel[N] | sig[3N]. */
-export function buildUnilateralBatch(records: UnilateralRecord[]): Buffer {
+/** Data columns: ids[N] | sig[3N]; channels for column 0. */
+export function buildUnilateralBatch(records: UnilateralRecord[]): Batch {
   const rs = padTo(records, N_UNI);
   const cols: Buffer[] = [];
   for (const r of rs) cols.push(u128Slot(bodySlots(r.commitment)[0]));
-  for (const r of rs) cols.push(r.channel.toBuffer());
   for (const r of rs) cols.push(...packBytesToSlots(r.signature));
-  const out = Buffer.concat(cols);
-  if (out.length !== UNILATERAL_SLOTS * SLOT) throw new Error(`bad unilateral batch length ${out.length}`);
-  return out;
+  const slots = Buffer.concat(cols);
+  if (slots.length !== UNILATERAL_DATA_SLOTS * SLOT) throw new Error(`bad unilateral batch length ${slots.length}`);
+  return { slots, channels: [rs.map((r) => r.channel)] };
 }
 
-/** Column-major: ids[N] | targets[N] | channel_ag[N] | channel_gp[N] | sig_agent[3N] | sig_gateway[3N]. */
-export function buildRouteBatch(records: RouteRecord[]): Buffer {
+/** Data columns: ids[N] | targets[N] | sig_agent[3N] | sig_gateway[3N]; channels for columns 0 and 1. */
+export function buildRouteBatch(records: RouteRecord[]): Batch {
   const rs = padTo(records, N_ROUTE);
   const cols: Buffer[] = [];
   for (const r of rs) cols.push(u128Slot(bodySlots(r.commitment)[0]));
   for (const r of rs) cols.push(u128Slot(bodySlots(r.commitment)[1]));
-  for (const r of rs) cols.push(r.channelAg.toBuffer());
-  for (const r of rs) cols.push(r.channelGp.toBuffer());
   for (const r of rs) cols.push(...packBytesToSlots(r.agentSignature));
   for (const r of rs) cols.push(...packBytesToSlots(r.gatewaySignature));
-  const out = Buffer.concat(cols);
-  if (out.length !== ROUTE_SLOTS * SLOT) throw new Error(`bad route batch length ${out.length}`);
-  return out;
+  const slots = Buffer.concat(cols);
+  if (slots.length !== ROUTE_DATA_SLOTS * SLOT) throw new Error(`bad route batch length ${slots.length}`);
+  return { slots, channels: [rs.map((r) => r.channelAg), rs.map((r) => r.channelGp)] };
 }
 
 export const clearingPda = (programId: PublicKey, staging: PublicKey) =>
@@ -114,6 +127,25 @@ const SLOTS_PER_LEGACY_TX = 30;
 const SLOTS_PER_V1_TX = 120;
 /** A stage_slots chunk this small still fits in one legacy tx alongside seal_and_queue's 15 accounts. */
 const MERGEABLE_TAIL_SLOTS = 18;
+/** Channel accounts per staging transaction: one stage_channels call's worth in legacy, three in v1. */
+const CHANNELS_PER_LEGACY_TX = MAX_CHANNELS_PER_STAGE;
+const CHANNELS_PER_V1_TX = 3 * MAX_CHANNELS_PER_STAGE;
+
+/** Split `channels` per column into stage_channels calls, then pack calls into transactions of at most `perTx` accounts. */
+function packChannelCalls(channels: PublicKey[][], perTx: number): { col: number; start: number; part: PublicKey[] }[][] {
+  const calls: { col: number; start: number; part: PublicKey[] }[] = [];
+  channels.forEach((chs, col) => {
+    for (let start = 0; start < chs.length; start += MAX_CHANNELS_PER_STAGE)
+      calls.push({ col, start, part: chs.slice(start, start + MAX_CHANNELS_PER_STAGE) });
+  });
+  calls.sort((a, b) => b.part.length - a.part.length); // big calls first, remainders share a tx
+  const txs: typeof calls[] = [];
+  for (const c of calls) {
+    const home = txs.find((t) => t.reduce((n, x) => n + x.part.length, 0) + c.part.length <= perTx);
+    if (home) home.push(c); else txs.push([c]);
+  }
+  return txs;
+}
 
 let v1Support: boolean | undefined;
 /**
@@ -135,11 +167,13 @@ export async function supportsTxV1(program: Program<RyvoProtocol>, payer: Keypai
   return v1Support;
 }
 
-/** Staging transactions a batch of `slots` needs under each format (for reporting). */
-export function stagingTxCount(slots: number): { legacy: number; v1: number } {
+/** Staging transactions a full batch of `kind` needs under each format (for reporting). */
+export function stagingTxCount(kind: number): { legacy: number; v1: number } {
+  const slots = kind === KIND_UNILATERAL ? UNILATERAL_DATA_SLOTS : ROUTE_DATA_SLOTS;
   const tail = slots % SLOTS_PER_LEGACY_TX;
-  const legacy = Math.floor(slots / SLOTS_PER_LEGACY_TX) + (tail === 0 ? 0 : 1);
-  return { legacy: legacy - (tail > 0 && tail <= MERGEABLE_TAIL_SLOTS ? 1 : 0), v1: Math.ceil(slots / SLOTS_PER_V1_TX) };
+  const legacySlots = Math.floor(slots / SLOTS_PER_LEGACY_TX) + (tail === 0 ? 0 : 1) - (tail > 0 && tail <= MERGEABLE_TAIL_SLOTS ? 1 : 0);
+  const cols = kind === KIND_UNILATERAL ? [new Array(N_UNI).fill(PublicKey.default)] : [new Array(N_ROUTE).fill(PublicKey.default), new Array(N_ROUTE).fill(PublicKey.default)];
+  return { legacy: legacySlots + packChannelCalls(cols, CHANNELS_PER_LEGACY_TX).length, v1: Math.ceil(slots / SLOTS_PER_V1_TX) + packChannelCalls(cols, CHANNELS_PER_V1_TX).length };
 }
 
 /**
@@ -173,9 +207,10 @@ export async function stageBatch(
   relayer: Keypair,
   staging: PublicKey,
   kind: number,
-  slots: Buffer,
+  batch: Batch,
   opts: { fresh?: boolean } = {},
 ): Promise<{ tailIx?: TransactionInstruction; txCount: number }> {
+  const { slots } = batch;
   const total = slots.length / SLOT;
   const useV1 = await supportsTxV1(program, relayer);
   const per = useV1 ? SLOTS_PER_V1_TX : SLOTS_PER_LEGACY_TX;
@@ -192,6 +227,16 @@ export async function stageBatch(
     const tx = new anchor.web3.Transaction().add(...ixs);
     return (program.provider as anchor.AnchorProvider).sendAndConfirm(tx, [relayer], { commitment: "confirmed" });
   };
+
+  // stage_channels: the program copies address + registered key for indices start.. of a column
+  const channelTxs: TransactionInstruction[][] = [];
+  for (const calls of packChannelCalls(batch.channels, useV1 ? CHANNELS_PER_V1_TX : CHANNELS_PER_LEGACY_TX)) {
+    channelTxs.push(await Promise.all(calls.map(({ col, start, part }) => program.methods
+      .stageChannels(col, start)
+      .accounts({ relayer: relayer.publicKey, staging })
+      .remainingAccounts(part.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false })))
+      .instruction())));
+  }
 
   let s = 0;
   let first = true;
@@ -215,6 +260,7 @@ export async function stageBatch(
     first = false;
     s += n;
   }
+  for (const ixs of channelTxs) sends.push(send(ixs));
   await Promise.all(sends);
   return { tailIx, txCount };
 }
@@ -252,10 +298,7 @@ export async function sealAndQueue(
   const m = kind === KIND_UNILATERAL
     ? program.methods.sealAndQueueUnilateral(computationOffset, count)
     : program.methods.sealAndQueueRoute(computationOffset, count);
-  // seal_and_queue builds one account argument per staged channel (up to 2N + 3 of them); the
-  // ArgumentList and its CPI serialisation exceed the 32 KB default heap, so request a bigger one.
-  const pre: TransactionInstruction[] = [ComputeBudgetProgram.requestHeapFrame({ bytes: 256 * 1024 })];
-  if (tailIx) pre.push(tailIx);
+  const pre: TransactionInstruction[] = tailIx ? [tailIx] : [];
   const sig = await m.accountsPartial(accounts).preInstructions(pre).signers([relayer]).rpc({ commitment: "confirmed" });
   return { computationOffset, clearingResult, sig };
 }

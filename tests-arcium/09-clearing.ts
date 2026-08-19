@@ -34,12 +34,15 @@ import {
   signCommitment,
 } from "../tests/commitment-client";
 import {
+  Batch,
+  N_ROUTE,
   RouteRecord,
   UnilateralRecord,
   awaitClearing,
   bitmapBits,
   buildRouteBatch,
   buildUnilateralBatch,
+  clearingPda,
   closeStaging,
   ensureArciumSigner,
   ensureCompDef,
@@ -173,9 +176,9 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   }
 
   /** Stage into the shared buffer (resetting it) + queue + wait; returns the bitmap. */
-  async function clear(kind: number, slots: Buffer, count: number) {
+  async function clear(kind: number, batch: Batch, count: number) {
     const t0 = Date.now();
-    const { tailIx, txCount } = await stageBatch(program, relayer, staging, kind, slots, { fresh: firstBatch });
+    const { tailIx, txCount } = await stageBatch(program, relayer, staging, kind, batch, { fresh: firstBatch });
     firstBatch = false;
     const { computationOffset, clearingResult } = await sealAndQueue(program, relayer, staging, kind, count, tailIx);
     await awaitClearing(provider, program, computationOffset);
@@ -334,8 +337,39 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await assertSolvent();
   });
 
+  it("clears a full route batch of 32 distinct agents and settles all of them (many-channel case)", async () => {
+    // Every batch index names its own agent channel: 32 + 2 distinct channels. Keys are copied
+    // on-chain by stage_channels, so the computation still has three account arguments — the
+    // Arcium program refuses a queue whose account arguments name more than ~14 distinct
+    // accounts, which is what per-channel arguments ran into on devnet.
+    const many: Chan[] = [];
+    for (let i = 0; i < N_ROUTE; i++) {
+      const a = await makeParty(10 * ONE);
+      const ch = await openChannel(a, gateway);
+      await lock(ch, 8 * ONE);
+      many.push(ch);
+    }
+    const gpBefore = [await chan(chanGP[0]), await chan(chanGP[1])];
+    // gateway targets are cumulative per gateway->provider channel: 1 unit fee per route
+    const cum = [gpBefore[0].settled, gpBefore[1].settled];
+    const records = many.map((ch, i) => {
+      const gp = i % 2;
+      cum[gp] += 2 * ONE;
+      return routeRecord(ch, chanGP[gp], 3 * ONE, cum[gp]);
+    });
+    const { bits } = await clear(KIND_ROUTE, buildRouteBatch(records), records.length);
+    expect(bits).to.deep.equal(new Array(N_ROUTE).fill(true));
+    for (let i = 0; i < N_ROUTE; i += 8) {
+      const idx = Array.from({ length: 8 }, (_, k) => i + k);
+      await settle(program, staging, idx, (j) => [many[j].key, chanGP[j % 2].key, providers[j % 2].balance]);
+    }
+    for (const ch of many) expect(await chan(ch)).to.deep.equal({ settled: 3 * ONE, locked: 5 * ONE });
+    expect((await program.account.clearingResult.fetch(clearingPda(program.programId, staging))).applied.slice(0, 4)).to.deep.equal([255, 255, 255, 255]);
+    await assertSolvent();
+  });
+
   it("reclaims the buffer's rent once its last batch is fully applied", async () => {
-    // Route index 1 was rejected by the circuit (never applied, never has to be); 0 and 2 applied.
+    // Every index of the last batch is applied.
     const before = await provider.connection.getBalance(relayer.publicKey);
     await closeStaging(program, relayer, staging);
     expect(await provider.connection.getBalance(relayer.publicKey)).to.be.greaterThan(before);
