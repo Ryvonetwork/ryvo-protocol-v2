@@ -70,7 +70,7 @@
 use crate::commitment::{pack_pair, pack_signature, unpack_pair, PUBKEY_SLOTS as KEY_SLOTS, KIND_ROUTE, KIND_UNILATERAL, SIG_SLOTS, SLOT};
 use crate::constants::{CLEARING_SEED, CONFIG_SEED};
 use crate::error::RyvoError;
-use crate::events::{BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled, RouteSettled};
+use crate::events::{BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled, RouteSettled};
 use crate::state::{Balance, Channel, Config};
 use crate::{ArciumSignerAccount, ID, ID_CONST};
 use anchor_lang::prelude::*;
@@ -142,11 +142,14 @@ pub struct StagingBuffer {
     /// `settle_channels` must read the same bytes.
     pub sealed: u8,
     pub _pad: [u8; 4],
+    /// Bit i set ⇒ index i was written by `stage_records` in THIS batch. Seal requires every
+    /// index below `count` to be set, so a batch can never carry a previous batch's bytes.
+    pub staged_mask: u64,
     pub slots: [[u8; SLOT]; MAX_SLOTS],
 }
 
 impl StagingBuffer {
-    pub const HEADER_LEN: usize = 8 + 32 + 2 + 1 + 1 + 4; // 48
+    pub const HEADER_LEN: usize = 8 + 32 + 2 + 1 + 1 + 4 + 8; // 56
     pub const SPACE: usize = 8 + Self::HEADER_LEN + SLOT * MAX_SLOTS;
 
     pub fn slots_per_record(kind: u8) -> Result<usize> {
@@ -207,7 +210,14 @@ pub struct ClearingResult {
     /// the relayer resets and re-stages. Recorded rather than erroring so the node's callback
     /// transaction lands on the first attempt instead of burning its retries.
     pub failed: bool,
-    pub _reserved: [u8; 31],
+    /// The Arcium computation this batch was queued with. The callback must come from exactly
+    /// this computation: the buffer and this account are reused batch after batch, so without
+    /// the binding a late or duplicate callback for an earlier computation would be recorded as
+    /// the verdict of whatever batch is current.
+    pub computation_offset: u64,
+    /// `StagingBuffer.batch_seq` at seal time, for events and post-mortems.
+    pub batch_seq: u64,
+    pub _reserved: [u8; 15],
 }
 
 impl ClearingResult {
@@ -337,10 +347,13 @@ pub fn open_staging_handler(ctx: Context<OpenStaging>, kind: u8) -> Result<()> {
     s.count = 0;
     s.kind = kind;
     s.sealed = 0;
+    s.staged_mask = 0;
     let r = &mut ctx.accounts.clearing_result;
     r.staging = ctx.accounts.staging.key();
     r.bump = ctx.bumps.clearing_result;
-    r._reserved = [0u8; 31];
+    r.computation_offset = 0;
+    r.batch_seq = 0;
+    r._reserved = [0u8; 15];
     r.clear(kind, 0);
     Ok(())
 }
@@ -359,20 +372,29 @@ pub struct ResetStaging<'info> {
     pub clearing_result: Box<Account<'info, ClearingResult>>,
 }
 
-/// Start the next batch in the same buffer. Allowed once the previous batch is done — every
-/// verified commitment applied, or the computation failed — or if it was never queued. Slots are
-/// not zeroed: the relayer overwrites what it uses and `count` bounds what is read.
+/// Start the next batch in the same buffer. Always allowed for the buffer's relayer: a batch
+/// that is not done — callback never landed, or verified commitments left unapplied — is
+/// abandoned, which is safe because a commitment is never "consumed" by a batch: monotonicity
+/// lives on the channel, so anything skipped here is simply re-submittable, and a late callback
+/// for the abandoned computation is refused by the `computation_offset` binding. Slots are not
+/// zeroed; `staged_mask` makes sure the next batch cannot reuse them by accident.
 pub fn reset_staging_handler(ctx: Context<ResetStaging>, kind: u8) -> Result<()> {
     StagingBuffer::slots_per_record(kind)?;
     let mut s = ctx.accounts.staging.load_mut()?;
     let r = &mut ctx.accounts.clearing_result;
-    if s.sealed == 1 {
-        require!(r.is_done(), RyvoError::StagingBusy);
+    if s.sealed == 1 && !r.is_done() {
+        emit!(BatchAbandoned {
+            staging: ctx.accounts.staging.key(),
+            batch_seq: s.batch_seq,
+            computation_offset: r.computation_offset,
+            verified: r.verified,
+        });
     }
     s.batch_seq = s.batch_seq.checked_add(1).ok_or(RyvoError::MathOverflow)?;
     s.count = 0;
     s.kind = kind;
     s.sealed = 0;
+    s.staged_mask = 0;
     r.clear(kind, 0);
     Ok(())
 }
@@ -394,6 +416,12 @@ fn u64_at(b: &[u8], o: usize) -> u64 {
 /// copies each channel's address and registered signing key from the `Channel` account itself,
 /// so the key staged for an index is always the one registered on the channel staged at that
 /// index. Bounds-checked against the batch size; the buffer must be open.
+///
+/// It also refuses, up front, anything that could verify but never settle: the channel account
+/// must carry the `channel_id` named in the record, and a route's two legs must chain
+/// (`ag.payee == gp.payer`, same mint). The circuit checks signatures only, so without this a
+/// co-signed but non-chaining route would earn a verified bit that `settle_channels` can never
+/// apply — and two colluding signers could hand such a record to any relayer.
 pub fn stage_records_handler<'info>(
     ctx: Context<'info, StageRecords<'info>>,
     start: u16,
@@ -416,20 +444,26 @@ pub fn stage_records_handler<'info>(
         let chans = &accs[r * channels_per..(r + 1) * channels_per];
         match kind {
             KIND_UNILATERAL => {
-                s.slots[UNI_COL_IDS + i] = u128_slot(pack_pair(u64_at(rec, 0), u64_at(rec, 8)));
+                let channel_id = u64_at(rec, 0);
+                s.slots[UNI_COL_IDS + i] = u128_slot(pack_pair(channel_id, u64_at(rec, 8)));
                 write_sig(&mut s.slots, UNI_COL_SIG + SIG_SLOTS * i, &rec[16..80]);
-                write_channel(&mut s.slots, UNI_COL_KEY + KEY_SLOTS * i, UNI_COL_CHANNEL + i, &chans[0])?;
+                let ch = write_channel(&mut s.slots, UNI_COL_KEY + KEY_SLOTS * i, UNI_COL_CHANNEL + i, &chans[0])?;
+                require!(ch.channel_id == channel_id, RyvoError::StagedRecordMismatch);
             }
             KIND_ROUTE => {
-                s.slots[RT_COL_IDS + i] = u128_slot(pack_pair(u64_at(rec, 0), u64_at(rec, 8)));
+                let (ag_id, gp_id) = (u64_at(rec, 0), u64_at(rec, 8));
+                s.slots[RT_COL_IDS + i] = u128_slot(pack_pair(ag_id, gp_id));
                 s.slots[RT_COL_TARGETS + i] = u128_slot(pack_pair(u64_at(rec, 16), u64_at(rec, 24)));
                 write_sig(&mut s.slots, RT_COL_SIG_A + SIG_SLOTS * i, &rec[32..96]);
                 write_sig(&mut s.slots, RT_COL_SIG_G + SIG_SLOTS * i, &rec[96..160]);
-                write_channel(&mut s.slots, RT_COL_KEY_A + KEY_SLOTS * i, RT_COL_CHANNEL_A + i, &chans[0])?;
-                write_channel(&mut s.slots, RT_COL_KEY_G + KEY_SLOTS * i, RT_COL_CHANNEL_G + i, &chans[1])?;
+                let ag = write_channel(&mut s.slots, RT_COL_KEY_A + KEY_SLOTS * i, RT_COL_CHANNEL_A + i, &chans[0])?;
+                let gp = write_channel(&mut s.slots, RT_COL_KEY_G + KEY_SLOTS * i, RT_COL_CHANNEL_G + i, &chans[1])?;
+                require!(ag.channel_id == ag_id && gp.channel_id == gp_id, RyvoError::StagedRecordMismatch);
+                require!(ag.payee == gp.payer && ag.mint == gp.mint, RyvoError::StagedRecordMismatch);
             }
             _ => unreachable!(),
         }
+        s.staged_mask |= 1u64 << i;
     }
     Ok(())
 }
@@ -446,12 +480,13 @@ fn write_sig(slots: &mut [[u8; SLOT]; MAX_SLOTS], at: usize, sig: &[u8]) {
 }
 
 /// Address + registered key of a `Channel` (owner and discriminator checked by `Account`).
-fn write_channel<'info>(slots: &mut [[u8; SLOT]; MAX_SLOTS], key_at: usize, channel_at: usize, info: &'info AccountInfo<'info>) -> Result<()> {
+/// Returns the channel so the caller can check the record against it.
+fn write_channel<'info>(slots: &mut [[u8; SLOT]; MAX_SLOTS], key_at: usize, channel_at: usize, info: &'info AccountInfo<'info>) -> Result<Account<'info, Channel>> {
     let channel: Account<Channel> = Account::try_from(info)?;
     slots[channel_at] = info.key().to_bytes();
     slots[key_at] = channel.signer_slots[0];
     slots[key_at + 1] = channel.signer_slots[1];
-    Ok(())
+    Ok(channel)
 }
 
 // ============================================================================================
@@ -553,24 +588,31 @@ fn range(staging: Pubkey, col: usize, slots: usize) -> (Pubkey, u32, u32) {
     (staging, (SLOTS_OFFSET + col * SLOT) as u32, (slots * SLOT) as u32)
 }
 
-/// Shared body: seal the buffer, reset the result for this batch, and build the argument list in
-/// the circuit's parameter order. The domain comes from `Config`, never from the relayer, so a
-/// batch cannot be verified against a foreign deployment's domain; the keys were copied from
-/// the `Channel` accounts by `stage_channels`, never written by the relayer.
+/// Shared body: seal the buffer, reset the result for this batch, bind it to the computation,
+/// and build the argument list in the circuit's parameter order. The domain comes from `Config`,
+/// never from the relayer, so a batch cannot be verified against a foreign deployment's domain;
+/// the keys were copied from the `Channel` accounts by `stage_records`, never written by the
+/// relayer.
 fn seal_common(
     staging_loader: &AccountLoader<StagingBuffer>,
     clearing_result: &mut ClearingResult,
     config: &Config,
     kind: u8,
     count: u16,
+    computation_offset: u64,
 ) -> Result<ArgumentList> {
     let mut s = staging_loader.load_mut()?;
     require!(s.kind == kind, RyvoError::InvalidStagingKind);
     require!(s.sealed == 0, RyvoError::StagingSealed);
     require!(count as usize >= 1 && count as usize <= batch_size(kind), RyvoError::InvalidStagingData);
+    // Every index below count must have been staged in this batch — never a previous batch's bytes.
+    let needed: u64 = if count as usize == 64 { u64::MAX } else { (1u64 << count) - 1 };
+    require!(s.staged_mask & needed == needed, RyvoError::IncompleteBatch);
     s.count = count;
     s.sealed = 1;
     clearing_result.clear(kind, count);
+    clearing_result.computation_offset = computation_offset;
+    clearing_result.batch_seq = s.batch_seq;
     // The circuit's input is fixed-size: pad a short batch by repeating record 0, which is a
     // complete, verifiable record. Padded indices are >= count and never settled.
     for i in count as usize..batch_size(kind) {
@@ -614,6 +656,7 @@ pub fn seal_and_queue_unilateral_handler(
         &ctx.accounts.config,
         KIND_UNILATERAL,
         count,
+        computation_offset,
     )?;
     queue_computation(
         ctx.accounts,
@@ -650,6 +693,7 @@ pub fn seal_and_queue_route_handler(
         &ctx.accounts.config,
         KIND_ROUTE,
         count,
+        computation_offset,
     )?;
     queue_computation(
         ctx.accounts,
@@ -723,6 +767,15 @@ pub struct ClearRoute64Callback<'info> {
         bump = clearing_result.bump,
     )]
     pub clearing_result: Box<Account<'info, ClearingResult>>,
+}
+
+/// The callback must come from the computation this batch was sealed with. The Arcium program
+/// already guarantees the transaction is a genuine node callback; this guarantees it is *ours*,
+/// and current — a callback for an abandoned or earlier computation is refused.
+pub fn require_current_computation(result: &ClearingResult, computation_account: &Pubkey, mxe_account: &MXEAccount) -> Result<()> {
+    let expected = derive_comp_pda!(result.computation_offset, mxe_account);
+    require!(*computation_account == expected, RyvoError::StaleCallback);
+    Ok(())
 }
 
 /// The computation did not produce an output. Recorded, not errored: see `ClearingResult::failed`.
@@ -960,11 +1013,19 @@ pub struct CloseStaging<'info> {
     pub clearing_result: Box<Account<'info, ClearingResult>>,
 }
 
-/// Reclaim rent for a buffer the relayer no longer needs. Same precondition as `reset_staging`.
+/// Reclaim rent for a buffer the relayer no longer needs. Same semantics as `reset_staging`: an
+/// unfinished batch is abandoned (its commitments remain re-submittable); a late callback for it
+/// then fails on the missing account and the node gives up.
 pub fn close_staging_handler(ctx: Context<CloseStaging>) -> Result<()> {
     let s = ctx.accounts.staging.load()?;
-    if s.sealed == 1 {
-        require!(ctx.accounts.clearing_result.is_done(), RyvoError::StagingBusy);
+    let r = &ctx.accounts.clearing_result;
+    if s.sealed == 1 && !r.is_done() {
+        emit!(BatchAbandoned {
+            staging: ctx.accounts.staging.key(),
+            batch_seq: s.batch_seq,
+            computation_offset: r.computation_offset,
+            verified: r.verified,
+        });
     }
     Ok(())
 }

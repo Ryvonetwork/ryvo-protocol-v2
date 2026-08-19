@@ -31,52 +31,6 @@ pub use state::*;
 
 declare_id!("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii");
 
-/// Heap allocator sized for `seal_and_queue_*`, which builds one Arcium account argument per
-/// staged channel (up to 2N + 3 = 131 of them) and then serialises the whole list into the
-/// queue CPI. Under a bump allocator that never frees, that exceeds the default 32 KB.
-///
-/// The runtime only maps what a transaction requests, so a transaction that allocates past 32 KB
-/// must carry `ComputeBudgetProgram::request_heap_frame(256 KiB)` — the clearing client does for
-/// every seal_and_queue. Every other instruction stays far below 32 KB and is unaffected.
-///
-/// The stock `BumpAllocator` hands out memory from the TOP of its region downward, so sizing it
-/// at 256 KiB would put the very first allocation of every instruction outside the 32 KiB a
-/// normal transaction maps. This one grows UPWARD from the heap start instead: instructions that
-/// stay under 32 KiB never touch unmapped memory, and only a transaction that requested a bigger
-/// frame can climb past it. It never frees (same as the default).
-#[cfg(all(feature = "custom-heap", target_os = "solana"))]
-mod heap {
-    use std::alloc::{GlobalAlloc, Layout};
-    const START: usize = anchor_lang::solana_program::entrypoint::HEAP_START_ADDRESS as usize;
-    const LEN: usize = 256 * 1024;
-
-    pub struct UpwardBump;
-
-    unsafe impl GlobalAlloc for UpwardBump {
-        #[inline]
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            // The first word of the heap holds the bump pointer; heap memory starts zeroed.
-            let pos_ptr = START as *mut usize;
-            let mut pos = *pos_ptr;
-            if pos == 0 {
-                pos = START + core::mem::size_of::<usize>();
-            }
-            let aligned = (pos + layout.align() - 1) & !(layout.align() - 1);
-            let end = aligned + layout.size();
-            if end > START + LEN {
-                return core::ptr::null_mut();
-            }
-            *pos_ptr = end;
-            aligned as *mut u8
-        }
-        #[inline]
-        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: UpwardBump = UpwardBump;
-}
-
 #[arcium_program]
 pub mod ryvo_protocol {
     #[allow(unused_imports)]
@@ -90,14 +44,8 @@ pub mod ryvo_protocol {
         ctx: Context<Initialize>,
         chain_id: u16,
         channel_timelock_seconds: i64,
-        initial_authority: Pubkey,
     ) -> Result<()> {
-        instructions::admin::initialize::handler(
-            ctx,
-            chain_id,
-            channel_timelock_seconds,
-            initial_authority,
-        )
+        instructions::admin::initialize::handler(ctx, chain_id, channel_timelock_seconds)
     }
 
     /// Nominate a successor authority. This is the whole of config mutability.
@@ -262,6 +210,11 @@ pub mod ryvo_protocol {
         ctx: Context<ClearUnilateral64Callback>,
         output: SignedComputationOutputs<ClearUnilateral64Output>,
     ) -> Result<()> {
+        clearing::require_current_computation(
+            &ctx.accounts.clearing_result,
+            &ctx.accounts.computation_account.key(),
+            &ctx.accounts.mxe_account,
+        )?;
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
         }
@@ -280,6 +233,11 @@ pub mod ryvo_protocol {
         ctx: Context<ClearRoute64Callback>,
         output: SignedComputationOutputs<ClearRoute64Output>,
     ) -> Result<()> {
+        clearing::require_current_computation(
+            &ctx.accounts.clearing_result,
+            &ctx.accounts.computation_account.key(),
+            &ctx.accounts.mxe_account,
+        )?;
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
         }

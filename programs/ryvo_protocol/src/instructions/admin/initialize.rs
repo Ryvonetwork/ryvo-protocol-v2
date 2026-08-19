@@ -1,4 +1,4 @@
-use crate::constants::{CONFIG_SEED, MAX_TIMELOCK_SECONDS};
+use crate::constants::{CONFIG_SEED, MAX_TIMELOCK_SECONDS, MIN_TIMELOCK_SECONDS};
 use crate::domain::derive_message_domain;
 use crate::error::RyvoError;
 use crate::events::ConfigInitialized;
@@ -12,6 +12,11 @@ const MAX_CHAIN_ID: u16 = 3;
 pub struct Initialize<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
+
+    /// The first config authority. Must sign: `Config` is immutable and lives forever, so a
+    /// mistyped authority would leave the protocol with no one able to allowlist a mint and no
+    /// recovery short of a new program id (and with it a new message domain).
+    pub initial_authority: Signer<'info>,
 
     #[account(
         init,
@@ -41,21 +46,21 @@ pub fn handler(
     ctx: Context<Initialize>,
     chain_id: u16,
     channel_timelock_seconds: i64,
-    initial_authority: Pubkey,
 ) -> Result<()> {
     require!(
         ctx.accounts.program_data.upgrade_authority_address == Some(ctx.accounts.payer.key()),
         RyvoError::UnauthorizedInitializer
     );
     require!(chain_id <= MAX_CHAIN_ID, RyvoError::InvalidChainId);
+    // A zero timelock would let request + execute fit in one transaction, which is no payee
+    // protection at all; the ceiling keeps a typo from locking collateral for years. The right
+    // value for a real deployment is a safety parameter in its own right: it must exceed the
+    // worst-case clearing latency by a wide margin, and it can never be changed.
     require!(
-        (0..=MAX_TIMELOCK_SECONDS).contains(&channel_timelock_seconds),
+        (MIN_TIMELOCK_SECONDS..=MAX_TIMELOCK_SECONDS).contains(&channel_timelock_seconds),
         RyvoError::InvalidTimelock
     );
-    require!(
-        initial_authority != Pubkey::default(),
-        RyvoError::InvalidAuthority
-    );
+    let initial_authority = ctx.accounts.initial_authority.key();
 
     // Derived, never supplied, so no authority can set it to collide with another deployment.
     let message_domain = derive_message_domain(&crate::ID, chain_id);

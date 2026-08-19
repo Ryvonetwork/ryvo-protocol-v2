@@ -164,8 +164,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
 
   it("1. bootstraps config, Arcium signer and computation definitions", async () => {
     if (!(await connection.getAccountInfo(pda.config))) {
-      await program.methods.initialize(DEVNET_CHAIN_ID, new anchor.BN(CHANNEL_TIMELOCK), payer.publicKey)
-        .accounts({ payer: payer.publicKey, config: pda.config, programData: pda.programData, systemProgram: SystemProgram.programId })
+      await program.methods.initialize(DEVNET_CHAIN_ID, new anchor.BN(CHANNEL_TIMELOCK))
+        .accounts({ payer: payer.publicKey, initialAuthority: payer.publicKey, config: pda.config, programData: pda.programData, systemProgram: SystemProgram.programId })
         .rpc();
       console.log("    initialized config");
     }

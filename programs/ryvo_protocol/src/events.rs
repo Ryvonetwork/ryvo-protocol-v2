@@ -66,6 +66,8 @@ pub struct Withdrawn {
     pub mint: Pubkey,
     pub amount: u64,
     pub destination: Pubkey,
+    /// Post-withdrawal balance, so indexers can follow `available` from events alone.
+    pub available: u64,
 }
 
 #[event]
@@ -83,6 +85,13 @@ pub struct ChannelFundsLocked {
     pub channel: Pubkey,
     pub amount: u64,
     pub locked_balance: u64,
+}
+
+/// A payer locked more collateral while an unlock request was outstanding; the request is void.
+#[event]
+pub struct ChannelUnlockCancelled {
+    pub channel: Pubkey,
+    pub cancelled_amount: u64,
 }
 
 #[event]
@@ -140,6 +149,16 @@ pub struct RouteSettled {
     pub channel_gp_id: u64,
     pub moved_ag: u64,
     pub moved_gp: u64,
+}
+
+/// The relayer reset or closed a buffer whose batch was not done (callback missing, or verified
+/// commitments left unapplied). Nothing is lost: those commitments are re-submittable.
+#[event]
+pub struct BatchAbandoned {
+    pub staging: Pubkey,
+    pub batch_seq: u64,
+    pub computation_offset: u64,
+    pub verified: bool,
 }
 
 #[event]

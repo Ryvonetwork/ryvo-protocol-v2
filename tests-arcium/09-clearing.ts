@@ -266,13 +266,11 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     ];
     const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
     expect(bits).to.deep.equal([true, true]);
-    // The buffer cannot be reset for a new batch while verified commitments are still unapplied.
-    // (a small batch rides entirely in the seal tx together with reset_staging, so the rejection
-    // surfaces there; a bigger one is rejected by the first staging tx)
-    await expectReject((async () => {
-      const busy = await stageBatch(program, relayer, staging, buildUnilateralBatch(records));
-      await sealAndQueue(program, relayer, staging, KIND_UNILATERAL, records.length, busy.sealPre);
-    })(), /StagingBusy/);
+    // Abandoning is allowed: the relayer may reset while verified commitments are unapplied. The
+    // commitments are not lost — monotonicity lives on the channel — so re-staging them in the
+    // next batch settles exactly what the abandoned batch would have.
+    const { bits: again } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
+    expect(again).to.deep.equal([true, true]);
     const gBefore = await avail(gateway);
     await settle(program, staging, [0, 1], (i) => [i === 0 ? chanAG[1].key : chanAG[0].key, gateway.balance]);
     expect(await chan(chanAG[1])).to.deep.equal({ settled: 50 * ONE, locked: 0 });
@@ -328,6 +326,24 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await assertSolvent();
 
     await expectReject(settle(program, staging, [1], () => [chanAG[2].key, chanGP[1].key, providers[1].balance]), /RecordNotVerified/);
+  });
+
+  it("refuses at stage time anything that would verify but never settle, and an incomplete batch", async () => {
+    // (1) a channel that does not carry the record's channel id
+    const wrongId: UnilateralRecord = { ...uniRecord(chanAG[0], 1 * ONE), channel: chanAG[1].key };
+    const tryBatch = (b: Batch, count: number) => (async () => {
+      const plan = await stageBatch(program, relayer, staging, b);
+      await sealAndQueue(program, relayer, staging, b.kind, count, plan.sealPre);
+    })();
+    await expectReject(tryBatch(buildUnilateralBatch([wrongId]), 1), /StagedRecordMismatch/);
+    // (2) a co-signed route whose legs do not chain: agent 1 -> gateway paired with a channel
+    //     whose payer is NOT the gateway (agent 2 -> gateway). Both signatures are real, so the
+    //     circuit would say true and settle_route would refuse forever — the classic wedge.
+    const badRoute: RouteRecord = routeRecord(chanAG[0], chanAG[1], 1 * ONE, 1 * ONE);
+    await expectReject(tryBatch(buildRouteBatch([badRoute]), 1), /StagedRecordMismatch/);
+    // (3) sealing with count larger than what was staged this batch
+    await expectReject(tryBatch(buildUnilateralBatch([uniRecord(chanAG[2], 1 * ONE)]), 2), /IncompleteBatch/);
+    // the buffer is left open (nothing sealed); the next test resets it normally
   });
 
   it("releases only what settlement left when the payer's unlock executes: the v1 clamp, end to end", async () => {

@@ -138,14 +138,15 @@ export async function ensureConfig(
 
   const upgradeAuthority = localWallet();
   await program.methods
-    .initialize(CHAIN_ID, new anchor.BN(CHANNEL_TIMELOCK), authority.publicKey)
+    .initialize(CHAIN_ID, new anchor.BN(CHANNEL_TIMELOCK))
     .accounts({
       payer: upgradeAuthority.publicKey,
+      initialAuthority: authority.publicKey,
       config: configPda,
       programData: seeds.programData(program.programId),
       systemProgram: SystemProgram.programId,
     })
-    .signers([upgradeAuthority])
+    .signers([upgradeAuthority, authority])
     .rpc();
 }
 

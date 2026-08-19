@@ -55,8 +55,8 @@ export const ROUTE_SLOTS_PER_RECORD = 2 + 2 * SIG_SLOTS + 4 + 2; // 14
 export const UNILATERAL_SLOTS = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 448
 export const ROUTE_SLOTS = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 896
 export const MAX_SLOTS = Math.max(UNILATERAL_SLOTS, ROUTE_SLOTS);
-/** 8-byte discriminator + 48-byte header + MAX_SLOTS slots. Must equal `StagingBuffer::SPACE`. */
-export const STAGING_SPACE = 8 + 48 + MAX_SLOTS * SLOT;
+/** 8-byte discriminator + 56-byte header + MAX_SLOTS slots. Must equal `StagingBuffer::SPACE`. */
+export const STAGING_SPACE = 8 + 56 + MAX_SLOTS * SLOT;
 export const CIRCUITS = { [KIND_UNILATERAL]: "clear_unilateral64", [KIND_ROUTE]: "clear_route64" } as const;
 export type CircuitName = (typeof CIRCUITS)[keyof typeof CIRCUITS];
 

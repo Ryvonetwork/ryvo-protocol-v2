@@ -242,6 +242,7 @@ pub fn withdraw_handler(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         mint: mint_key,
         amount,
         destination: ctx.accounts.destination.key(),
+        available: balance.available,
     });
     Ok(())
 }

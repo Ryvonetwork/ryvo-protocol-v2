@@ -41,24 +41,22 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     overrides: Partial<{
       chainId: number;
       channelTimelock: number;
-      initialAuthority: PublicKey;
+      initialAuthority: Keypair;
       payer: Keypair;
     }> = {},
   ) => {
     const payer = overrides.payer ?? upgradeAuthority;
+    const initialAuthority = overrides.initialAuthority ?? authority;
     return program.methods
-      .initialize(
-        overrides.chainId ?? CHAIN_ID,
-        new anchor.BN(overrides.channelTimelock ?? CHANNEL_TIMELOCK),
-        overrides.initialAuthority ?? authority.publicKey,
-      )
+      .initialize(overrides.chainId ?? CHAIN_ID, new anchor.BN(overrides.channelTimelock ?? CHANNEL_TIMELOCK))
       .accounts({
         payer: payer.publicKey,
+        initialAuthority: initialAuthority.publicKey,
         config: configPda,
         programData,
         systemProgram: SystemProgram.programId,
       })
-      .signers([payer]);
+      .signers(payer.publicKey.equals(initialAuthority.publicKey) ? [payer] : [payer, initialAuthority]);
   };
 
   it("rejects a caller that is not the program upgrade authority", async () => {
@@ -80,7 +78,8 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     for (const [label, o] of [
       ["chain_id 4", { chainId: 4 }],
       ["channel timelock 30d+1", { channelTimelock: 30 * 24 * 60 * 60 + 1 }],
-      ["default authority", { initialAuthority: PublicKey.default }],
+      // zero would let request + execute fit in one transaction: no payee protection at all
+      ["channel timelock 0", { channelTimelock: 0 }],
     ] as const) {
       let failed = false;
       try {

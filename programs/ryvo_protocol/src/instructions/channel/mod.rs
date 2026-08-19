@@ -3,7 +3,8 @@ use crate::constants::{
 };
 use crate::error::RyvoError;
 use crate::events::{
-    ChannelCreated, ChannelFundsLocked, ChannelFundsUnlocked, ChannelUnlockRequested,
+    ChannelCreated, ChannelFundsLocked, ChannelFundsUnlocked, ChannelUnlockCancelled,
+    ChannelUnlockRequested,
 };
 use crate::state::{Balance, Channel, Config, Participant, TokenConfig};
 use anchor_lang::prelude::*;
@@ -177,6 +178,12 @@ pub struct PayerChannelOp<'info> {
 ///
 /// No tokens move: the vault total is unchanged, only the ledger split between `available` and
 /// `locked_balance`. Locked funds cannot be withdrawn and cannot fund another channel.
+///
+/// Locking **cancels any outstanding unlock request**. Without this, a request that matured
+/// while settlement drained the lock would stay armed, and collateral locked later could be
+/// released the moment it arrived — no timelock for the payee. A payer who still wants out
+/// re-requests and waits the full timelock again; payer-signed, so no one else can use it to
+/// cancel a request.
 pub fn lock_channel_funds_handler(ctx: Context<PayerChannelOp>, amount: u64) -> Result<()> {
     require!(amount > 0, RyvoError::AmountMustBePositive);
     require!(
@@ -195,12 +202,18 @@ pub fn lock_channel_funds_handler(ctx: Context<PayerChannelOp>, amount: u64) -> 
         .locked_balance
         .checked_add(amount)
         .ok_or(RyvoError::MathOverflow)?;
+    let cancelled = channel.pending_unlock_amount;
+    channel.pending_unlock_amount = 0;
+    channel.pending_unlock_at = 0;
 
     emit!(ChannelFundsLocked {
         channel: channel.key(),
         amount,
         locked_balance: channel.locked_balance,
     });
+    if cancelled > 0 {
+        emit!(ChannelUnlockCancelled { channel: channel.key(), cancelled_amount: cancelled });
+    }
     Ok(())
 }
 

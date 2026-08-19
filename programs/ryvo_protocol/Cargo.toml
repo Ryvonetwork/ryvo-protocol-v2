@@ -9,15 +9,13 @@ crate-type = ["cdylib", "lib"]
 name = "ryvo_protocol"
 
 [features]
-# custom-heap: see the allocator in lib.rs — seal_and_queue_* needs more than the 32 KB default.
-default = ["custom-heap"]
+default = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "arcium-anchor/idl-build"]
 anchor-debug = []
-custom-heap = []
 custom-panic = []
 
 [dependencies]

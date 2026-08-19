@@ -88,4 +88,10 @@ pub enum RyvoError {
     SettlementRouteMismatch,
     #[msg("The Arcium computation was aborted or its output failed verification")]
     AbortedComputation,
+    #[msg("Callback is for a computation other than the one this batch was queued with")]
+    StaleCallback,
+    #[msg("Staged channel does not carry the record's channel id, or the route legs do not chain")]
+    StagedRecordMismatch,
+    #[msg("Not every index below count was staged for this batch")]
+    IncompleteBatch,
 }

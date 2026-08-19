@@ -359,6 +359,55 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     await assertSolvent();
   });
 
+  it("cancels an outstanding unlock request when the payer locks more (no timelock bypass for re-locked funds)", async () => {
+    // The attack this closes: request → (settlement drains the lock while the request matures)
+    // → re-lock → execute immediately. Locking must void the request.
+    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    await program.methods
+      .requestUnlockChannelFunds(new anchor.BN(5 * ONE))
+      .accounts(payerOp(payer, channel))
+      .signers([payer.owner])
+      .rpc();
+    await sleep((CHANNEL_TIMELOCK + 1) * 1000); // the request has matured
+    await program.methods
+      .lockChannelFunds(new anchor.BN(1 * ONE))
+      .accounts(payerOp(payer, channel))
+      .signers([payer.owner])
+      .rpc();
+    const c = await program.account.channel.fetch(channel);
+    expect(c.pendingUnlockAmount.toNumber()).to.equal(0);
+    expect(c.pendingUnlockAt.toNumber()).to.equal(0);
+    await expectReject(
+      program.methods.executeUnlockChannelFunds().accounts(payerOp(payer, channel)).signers([payer.owner]).rpc(),
+      /NoChannelUnlockPending/,
+    );
+    // a fresh request starts a fresh timelock
+    await program.methods
+      .requestUnlockChannelFunds(new anchor.BN(5 * ONE))
+      .accounts(payerOp(payer, channel))
+      .signers([payer.owner])
+      .rpc();
+    await expectReject(
+      program.methods.executeUnlockChannelFunds().accounts(payerOp(payer, channel)).signers([payer.owner]).rpc(),
+      /ChannelUnlockLocked/,
+    );
+    // restore the lock the next test expects (25): the extra 1 comes back cooperatively
+    await program.methods
+      .cooperativeUnlockChannelFunds(new anchor.BN(1 * ONE))
+      .accounts({
+        payerOwner: payer.owner.publicKey,
+        payeeOwner: payee.owner.publicKey,
+        payerParticipant: payer.participant,
+        payeeParticipant: payee.participant,
+        channel,
+        payerBalance: payer.balance,
+      })
+      .signers([payer.owner, payee.owner])
+      .rpc();
+    expect((await program.account.channel.fetch(channel)).lockedBalance.toNumber()).to.equal(25 * ONE);
+    await assertSolvent();
+  });
+
   it("supersedes an outstanding request on cooperative release", async () => {
     // Note what this does NOT test. `execute_unlock_channel_funds` releases
     // `min(pending_unlock_amount, locked_balance)`, but that clamp is unreachable in v1:
