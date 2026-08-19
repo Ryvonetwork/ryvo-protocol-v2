@@ -61,6 +61,7 @@ import {
   ensureArciumSigner,
   ensureCompDef,
   openStaging,
+  routePoolPda,
   sealAndQueue,
   stageBatch,
   stagingTxCount,
@@ -148,6 +149,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   const routeOf: { ag: number; gp: number; targetAg: number; targetGp: number; increment: number }[] = [];
   /** The relayer's single reusable staging buffer. */
   let staging: PublicKey;
+  /** The gateway's route pool for the mint: agent money lands here, providers are paid from it. */
+  let gatewayPool: PublicKey;
   /** The previous batch's computation; its rent comes back in the next batch's first tx. */
   let lastComputation: anchor.BN | undefined;
   const batches: { first: number; count: number; bits: boolean[] }[] = [];
@@ -247,6 +250,11 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     // Config is write-locked by create_channel, so these serialize on-chain anyway; keep
     // concurrency modest to avoid preflight races on the id counter.
     for (const p of providers) chanGP.push(await openChannel(gateway, p));
+    gatewayPool = routePoolPda(programId, gateway.participant, mint);
+    await program.methods.openRoutePool()
+      .accounts({ payer: payer.publicKey, participant: gateway.participant, mint, tokenConfig, pool: gatewayPool, systemProgram: SystemProgram.programId })
+      .rpc();
+    stats.tx.setup++;
     const ag = await pmap(agents, (a) => openChannel(a, gateway), 3);
     chanAG.push(...ag);
 
@@ -349,7 +357,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     let uniq = new Set<string>();
     for (let i = 0; i < b.count; i++) {
       const r = routeOf[b.first + i];
-      const keys = [chanAG[r.ag].key, chanGP[r.gp].key, providers[r.gp].balance].map((k) => k.toBase58());
+      const keys = [chanAG[r.ag].key, chanGP[r.gp].key, gatewayPool, providers[r.gp].balance].map((k) => k.toBase58());
       const next = new Set([...uniq, ...keys]);
       if (cur.length && (next.size + fixed > MAX_TX_ACCOUNTS || cur.length >= SETTLE_PER_TX)) { chunks.push(cur); cur = []; uniq = new Set(); }
       keys.forEach((k) => uniq.add(k));
@@ -363,7 +371,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     for (const indices of settleChunks(b)) {
       const remaining = indices.flatMap((i) => {
         const r = routeOf[b.first + i];
-        return [chanAG[r.ag].key, chanGP[r.gp].key, providers[r.gp].balance].map((pubkey) => ({ pubkey, isWritable: true, isSigner: false }));
+        return [chanAG[r.ag].key, chanGP[r.gp].key, gatewayPool, providers[r.gp].balance].map((pubkey) => ({ pubkey, isWritable: true, isSigner: false }));
       });
       const ix = await program.methods.settleChannels(Buffer.from(indices))
         .accounts({ staging, clearingResult: clearingPda(programId, staging) })
@@ -393,7 +401,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const bal = await program.account.balance.fetch(providers[j].balance);
       expect(bal.available.toNumber(), `provider ${j}`).to.equal(expProvider[j]);
       const gp = await program.account.channel.fetch(chanGP[j].key);
-      expect(gp.lockedBalance.toNumber(), `gateway fee ${j}`).to.equal(expFee[j]);
+      expect(gp.lockedBalance.toNumber(), `gateway channel lock ${j}`).to.equal(0);
       expect(gp.settledCumulative.toNumber()).to.equal(expProvider[j]);
     }
     for (let i = 0; i < AGENTS; i++) {
@@ -406,8 +414,11 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     const channels = await program.account.channel.all([{ memcmp: { offset: 8 + 64, bytes: mint.toBase58() } }]);
     const sumAvail = balances.reduce((a, b) => a + BigInt(b.account.available.toString()), 0n);
     const sumLocked = channels.reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
-    expect(vaultAcc.amount.toString()).to.equal((sumAvail + sumLocked).toString());
-    console.log(`    providers paid ${expProvider.reduce((a, b) => a + b, 0) / ONE}, gateway fees ${expFee.reduce((a, b) => a + b, 0) / ONE}, vault ${Number(vaultAcc.amount) / ONE} == available ${Number(sumAvail) / ONE} + locked ${Number(sumLocked) / ONE}`);
+    const pool = await program.account.routePool.fetch(gatewayPool);
+    expect(pool.balance.toNumber(), "gateway pool = all fees").to.equal(expFee.reduce((a, b) => a + b, 0));
+    const sumPool = BigInt(pool.balance.toString());
+    expect(vaultAcc.amount.toString()).to.equal((sumAvail + sumLocked + sumPool).toString());
+    console.log(`    providers paid ${expProvider.reduce((a, b) => a + b, 0) / ONE}, gateway pool (fees) ${Number(sumPool) / ONE}, vault ${Number(vaultAcc.amount) / ONE} == available ${Number(sumAvail) / ONE} + locked ${Number(sumLocked) / ONE} + pool ${Number(sumPool) / ONE}`);
 
     // last computation's rent + the buffer's rent come back in one tx
     const closeIxs = lastComputation ? [await claimComputationRentIx(program, payer.publicKey, lastComputation)] : [];

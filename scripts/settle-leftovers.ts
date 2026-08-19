@@ -49,7 +49,8 @@ const LEGACY_ACCOUNT_BUDGET = 30; // what fits a 1,232-byte legacy tx without a 
           const chAg = key(12 * N, i), chGp = key(13 * N, i);
           const gp = await program.account.channel.fetch(chGp);
           const bal = PublicKey.findProgramAddressSync([Buffer.from("balance"), gp.payee.toBuffer(), gp.mint.toBuffer()], program.programId)[0];
-          accountsFor.set(i, [chAg, chGp, bal]);
+          const pool = PublicKey.findProgramAddressSync([Buffer.from("pool"), gp.payer.toBuffer(), gp.mint.toBuffer()], program.programId)[0];
+          accountsFor.set(i, [chAg, chGp, pool, bal]);
         } else {
           const ch = key(6 * N, i);
           const c = await program.account.channel.fetch(ch);

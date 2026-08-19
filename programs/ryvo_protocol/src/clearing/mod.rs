@@ -8,7 +8,9 @@
 //! Everything about money (`min(delta, locked_balance)`, monotonicity, who gets credited) is
 //! re-derived here from the same sealed bytes the circuit read, so a compromised MPC could at
 //! worst approve an invalid signature, and even then the payment is capped by what the payer had
-//! already locked in that specific channel.
+//! already locked in that specific channel. A route credits the agent's increase to the
+//! gateway's `RoutePool` and pays the provider from it, so settlement order never decides which
+//! provider a payment reaches.
 //!
 //! # Two phases
 //!
@@ -71,7 +73,7 @@ use crate::commitment::{pack_pair, pack_signature, unpack_pair, PUBKEY_SLOTS as 
 use crate::constants::{CLEARING_SEED, CONFIG_SEED};
 use crate::error::RyvoError;
 use crate::events::{BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled, RouteSettled, StaleCallbackIgnored};
-use crate::state::{Balance, Channel, Config};
+use crate::state::{Balance, Channel, Config, RoutePool};
 use crate::{ArciumSignerAccount, ID, ID_CONST};
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
@@ -937,7 +939,7 @@ pub struct SettleChannels<'info> {
     pub clearing_result: Box<Account<'info, ClearingResult>>,
     // remaining_accounts: per index, in order —
     //   unilateral: [channel (mut), payee_balance (mut)]
-    //   route:      [channel_ag (mut), channel_gp (mut), provider_balance (mut)]
+    //   route:      [channel_ag (mut), channel_gp (mut), gateway route pool (mut), provider_balance (mut)]
 }
 
 /// Move funds for the listed commitments. Anyone may call it; a wrong or missing account simply
@@ -954,7 +956,7 @@ pub fn settle_channels_handler<'info>(
     let kind = staging.kind;
     let per = match kind {
         KIND_UNILATERAL => 2,
-        KIND_ROUTE => 3,
+        KIND_ROUTE => 4,
         _ => return Err(RyvoError::InvalidStagingKind.into()),
     };
     require!(
@@ -1053,35 +1055,43 @@ fn settle_route<'info>(
     require!(accs[1].key() == staged_gp, RyvoError::SettlementChannelMismatch);
     let mut channel_ag = load_mut::<Channel>(&accs[0])?;
     let mut channel_gp = load_mut::<Channel>(&accs[1])?;
-    let mut provider_balance = load_mut::<Balance>(&accs[2])?;
+    let mut pool = load_mut::<RoutePool>(&accs[2])?;
+    let mut provider_balance = load_mut::<Balance>(&accs[3])?;
 
     require!(channel_ag.channel_id == ag_id, RyvoError::SettlementChannelMismatch);
     require!(channel_gp.channel_id == gp_id, RyvoError::SettlementChannelMismatch);
-    // The two legs must actually chain: the gateway is the payee of one and the payer of the
-    // other, in the same asset.
+    // The two channels must actually chain: the gateway is the payee of one and the payer of the
+    // other, in the same asset — and the pool is that gateway's pool for that asset.
     require!(
         channel_ag.payee == channel_gp.payer && channel_ag.mint == channel_gp.mint,
         RyvoError::SettlementRouteMismatch
+    );
+    require!(
+        pool.participant == channel_gp.payer && pool.mint == channel_gp.mint,
+        RyvoError::SettlementPoolMismatch
     );
     require!(
         provider_balance.participant == channel_gp.payee && provider_balance.mint == channel_gp.mint,
         RyvoError::SettlementBalanceMismatch
     );
 
-    // Leg 1: agent -> gateway, credited straight into the gateway->provider channel's lock so
-    // leg 2 can spend it in the same instruction. No gateway prefunding, no gateway signature.
+    // Step 1: the agent's outstanding increase goes into the gateway's pool — not into this
+    // particular gateway→provider channel, so settling routes out of order cannot move one
+    // provider's money into another provider's channel. No gateway prefunding, no gateway signature.
     let moved_ag = payable(target_ag, channel_ag.settled_cumulative, channel_ag.locked_balance);
     channel_ag.locked_balance -= moved_ag;
     channel_ag.settled_cumulative += moved_ag;
-    channel_gp.locked_balance = channel_gp
-        .locked_balance
-        .checked_add(moved_ag)
-        .ok_or(RyvoError::MathOverflow)?;
+    pool.balance = pool.balance.checked_add(moved_ag).ok_or(RyvoError::MathOverflow)?;
 
-    // Leg 2: gateway -> provider. Whatever `moved_ag - moved_gp` remains stays locked in the
-    // gateway's channel — that is the gateway's fee, with no fee logic anywhere.
-    let moved_gp = payable(target_gp, channel_gp.settled_cumulative, channel_gp.locked_balance);
-    channel_gp.locked_balance -= moved_gp;
+    // Step 2: the provider is paid its increase from the pool first (routed value plus anything
+    // the gateway put there), then from collateral the gateway locked in this specific channel.
+    // Whatever is left in the pool is the gateway's margin, withdrawable after the timelock.
+    let delta_gp = target_gp.saturating_sub(channel_gp.settled_cumulative);
+    let from_pool = delta_gp.min(pool.balance);
+    let from_lock = (delta_gp - from_pool).min(channel_gp.locked_balance);
+    let moved_gp = from_pool + from_lock;
+    pool.balance -= from_pool;
+    channel_gp.locked_balance -= from_lock;
     channel_gp.settled_cumulative += moved_gp;
     provider_balance.available = provider_balance
         .available
@@ -1091,15 +1101,18 @@ fn settle_route<'info>(
     if moved_ag > 0 || moved_gp > 0 {
         channel_ag.exit(&crate::ID)?;
         channel_gp.exit(&crate::ID)?;
+        pool.exit(&crate::ID)?;
         provider_balance.exit(&crate::ID)?;
     }
     emit!(RouteSettled {
         channel_ag: channel_ag.key(),
         channel_gp: channel_gp.key(),
+        pool: pool.key(),
         channel_ag_id: ag_id,
         channel_gp_id: gp_id,
         moved_ag,
         moved_gp,
+        from_pool,
     });
     Ok(())
 }

@@ -45,6 +45,14 @@ pub enum RyvoError {
     NoChannelUnlockPending,
     #[msg("Channel unlock timelock has not elapsed")]
     ChannelUnlockLocked,
+    #[msg("Insufficient pool balance")]
+    InsufficientPoolBalance,
+    #[msg("No pool unlock is pending")]
+    NoPoolUnlockPending,
+    #[msg("Pool unlock timelock has not elapsed")]
+    PoolUnlockLocked,
+    #[msg("Route pool account is not the gateway's pool for this mint")]
+    SettlementPoolMismatch,
 
     // --- commitment message ---
     // Exercised by unit tests in v1; the settlement path that consumes them lands in v2.

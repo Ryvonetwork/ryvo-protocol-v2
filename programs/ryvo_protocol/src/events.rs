@@ -145,10 +145,43 @@ pub struct ChannelSettled {
 pub struct RouteSettled {
     pub channel_ag: Pubkey,
     pub channel_gp: Pubkey,
+    pub pool: Pubkey,
     pub channel_ag_id: u64,
     pub channel_gp_id: u64,
+    /// Agent → pool.
     pub moved_ag: u64,
+    /// Pool + gateway channel lock → provider (`from_pool` of it came from the pool).
     pub moved_gp: u64,
+    pub from_pool: u64,
+}
+
+#[event]
+pub struct RoutePoolOpened {
+    pub pool: Pubkey,
+    pub participant: Pubkey,
+    pub mint: Pubkey,
+}
+
+#[event]
+pub struct RoutePoolFunded {
+    pub pool: Pubkey,
+    pub amount: u64,
+    pub balance: u64,
+    pub cancelled_unlock: u64,
+}
+
+#[event]
+pub struct RoutePoolUnlockRequested {
+    pub pool: Pubkey,
+    pub requested_amount: u64,
+    pub unlock_at: i64,
+}
+
+#[event]
+pub struct RoutePoolUnlocked {
+    pub pool: Pubkey,
+    pub released_amount: u64,
+    pub remaining: u64,
 }
 
 /// The relayer reset or closed a buffer whose batch was not done (callback missing, or verified

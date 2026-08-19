@@ -27,7 +27,7 @@ def records_per_tx(wire, tx_bytes, extra=0):
 ARCIUM_FEE_LAMPORTS = 10_045                # paid to the Arcium fee pool per computation (devnet price; 64-route batch; 32-route was 10,023)
 COMPUTATION_RENT_LAMPORTS = 5_679_360       # 678-byte computation account; reclaimed in the next seal tx (net zero in steady state)
 SETTLE_CU_PER_ROUTE = 171_363 / 39          # 4,394 (39 routes, 64 unique accounts, one v0 tx)
-SETTLE_ROUTES_PER_TX = 39                   # tx account-lock limit is 64 (the 128 feature is inactive on devnet and mainnet): 39 agent channels + 10 gateway channels + 10 balances + 5
+SETTLE_ROUTES_PER_TX = 38                   # tx account-lock limit is 64 (the 128 feature is inactive on devnet and mainnet): 38 agent channels + 10 gateway channels + 10 balances + pool + 5
 SETTLE_UNI_PER_TX = 58                      # 58 channels + 1 shared payee balance + 5 (lock limit)
 STAGE_TX_CU = 10_232                        # measured: 4 routes packed on-chain per tx
 QUEUE_TX_CU = 177_007                       # measured (seal + pad + Arcium CPI, N=64)

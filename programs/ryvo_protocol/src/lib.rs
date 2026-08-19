@@ -129,6 +129,24 @@ pub mod ryvo_protocol {
         instructions::channel::cooperative_unlock_channel_funds_handler(ctx, amount)
     }
 
+    // --- route pools (gateway float) ---
+
+    pub fn open_route_pool(ctx: Context<OpenRoutePool>) -> Result<()> {
+        instructions::pool::open_route_pool_handler(ctx)
+    }
+
+    pub fn fund_route_pool(ctx: Context<PoolOp>, amount: u64) -> Result<()> {
+        instructions::pool::fund_route_pool_handler(ctx, amount)
+    }
+
+    pub fn request_pool_unlock(ctx: Context<PoolOp>, amount: u64) -> Result<()> {
+        instructions::pool::request_pool_unlock_handler(ctx, amount)
+    }
+
+    pub fn execute_pool_unlock(ctx: Context<PoolOp>) -> Result<()> {
+        instructions::pool::execute_pool_unlock_handler(ctx)
+    }
+
     // --- clearing: one-time setup ---
 
     pub fn init_arcium_signer(ctx: Context<InitArciumSigner>) -> Result<()> {

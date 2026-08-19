@@ -11,9 +11,13 @@
 //!   `target_cumulative`."
 //! * `kind = 0x02` **route**: two signers, two channels. The agent and the gateway both sign the
 //!   same bytes; the agent authorises `channel_ag` up to `target_ag`, the gateway authorises
-//!   `channel_gp` up to `target_gp`, and settlement moves both legs in one instruction. The
-//!   gateway never holds the money and cannot withhold the payout, because its consent is
-//!   already inside the record the provider holds.
+//!   `channel_gp` up to `target_gp`, and settlement applies both in one instruction: the agent's
+//!   increase goes into the gateway's pool for that mint, and the provider is paid its increase
+//!   out of that pool (then out of the gateway's channel lock). The pool, not a specific
+//!   provider channel, is what receives agent money, so the order in which a gateway's routes
+//!   settle cannot move one provider's payment into another provider's channel; the gateway
+//!   cannot withhold a payout, because its consent is already inside the record the provider
+//!   holds and the pool can only be withdrawn after the timelock.
 //!
 //! Channels are named by `channel_id: u64` (a global counter assigned at `create_channel`), not
 //! by their 32-byte address. That is what keeps a route message at 50 bytes and lets a staged

@@ -47,6 +47,7 @@ import {
   ensureArciumSigner,
   ensureCompDef,
   openStaging,
+  routePoolPda,
   sealAndQueue,
   settle,
   stageBatch,
@@ -87,6 +88,8 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   const chanGP: Chan[] = []; // gateway -> provider j
   /** The relayer's one reusable staging buffer, opened in `before`, closed at the end. */
   let staging: PublicKey;
+  let gatewayPool: PublicKey;
+  const poolBalance = async () => (await program.account.routePool.fetch(gatewayPool)).balance.toNumber();
   let firstBatch = true;
   /** The previous batch's computation; its rent is reclaimed in the next batch's first tx. */
   let lastComputation: anchor.BN | undefined;
@@ -174,7 +177,9 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const channels = await program.account.channel.all();
     const sumAvailable = balances.filter((b) => b.account.mint.equals(mint)).reduce((a, b) => a + BigInt(b.account.available.toString()), 0n);
     const sumLocked = channels.filter((c) => c.account.mint.equals(mint)).reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
-    expect(vaultAcc.amount.toString()).to.equal((sumAvailable + sumLocked).toString(), "solvency invariant violated");
+    const pools = await program.account.routePool.all();
+    const sumPool = pools.filter((p) => p.account.mint.equals(mint)).reduce((a, p) => a + BigInt(p.account.balance.toString()), 0n);
+    expect(vaultAcc.amount.toString()).to.equal((sumAvailable + sumLocked + sumPool).toString(), "solvency invariant violated");
   }
 
   /** Stage into the shared buffer (resetting it) + queue + wait; returns the bitmap. */
@@ -219,6 +224,11 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     providers = [await makeParty(0), await makeParty(0)];
     for (const a of agents) chanAG.push(await openChannel(a, gateway));
     for (const p of providers) chanGP.push(await openChannel(gateway, p));
+    // the gateway's pool for this mint: routes credit agent money here, providers are paid from it
+    gatewayPool = routePoolPda(program.programId, gateway.participant, mint);
+    await program.methods.openRoutePool()
+      .accounts({ payer: relayer.publicKey, participant: gateway.participant, mint, tokenConfig, pool: gatewayPool, systemProgram: SystemProgram.programId })
+      .signers([relayer]).rpc();
     await lock(chanAG[0], 60 * ONE);
     await lock(chanAG[1], 30 * ONE);
     await lock(chanAG[2], 100 * ONE);
@@ -338,29 +348,34 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const { bits } = await clear(KIND_ROUTE, buildRouteBatch(records), records.length);
     expect(bits).to.deep.equal([true, false, true]);
 
-    // Legs that do not chain (wrong provider balance for the gateway->provider channel) are refused.
-    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanGP[0].key, providers[1].balance]), /SettlementBalanceMismatch/);
-    // And a gateway->provider channel that is not fed by this agent->gateway channel is refused.
-    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanAG[1].key, providers[0].balance]), /SettlementChannelMismatch/);
+    // A wrong provider balance for the gateway->provider channel is refused.
+    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanGP[0].key, gatewayPool, providers[1].balance]), /SettlementBalanceMismatch/);
+    // A gateway->provider channel that is not fed by this agent->gateway channel is refused.
+    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanAG[1].key, gatewayPool, providers[0].balance]), /SettlementChannelMismatch/);
+    // A pool that is not this gateway's is refused (here: another participant's balance-shaped account fails the type check).
+    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanGP[0].key, gateway.balance, providers[0].balance]));
 
     const p1Before = await avail(providers[0]);
     const p2Before = await avail(providers[1]);
     const gBefore = await avail(gateway);
+    const poolBefore = await poolBalance();
     await settle(program, staging, [0, 2], (i) => i === 0
-      ? [chanAG[0].key, chanGP[0].key, providers[0].balance]
-      : [chanAG[2].key, chanGP[1].key, providers[1].balance]);
+      ? [chanAG[0].key, chanGP[0].key, gatewayPool, providers[0].balance]
+      : [chanAG[2].key, chanGP[1].key, gatewayPool, providers[1].balance]);
 
     expect(await chan(chanAG[0])).to.deep.equal({ settled: 55 * ONE, locked: 5 * ONE });
-    expect(await chan(chanGP[0])).to.deep.equal({ settled: 12 * ONE, locked: 3 * ONE }); // fee stays locked
+    expect(await chan(chanGP[0])).to.deep.equal({ settled: 12 * ONE, locked: 0 }); // the gateway's channel lock is untouched
     expect(await avail(providers[0])).to.equal(p1Before + 12 * ONE);
     expect(await chan(chanAG[2])).to.deep.equal({ settled: 60 * ONE, locked: 40 * ONE });
     expect(await chan(chanGP[1])).to.deep.equal({ settled: 35 * ONE, locked: 0 });
     expect(await avail(providers[1])).to.equal(p2Before + 35 * ONE);
+    // The gateway's margin (15 - 12 = 3, 35 - 35 = 0) sits in its pool, not in a provider channel.
+    expect(await poolBalance()).to.equal(poolBefore + 3 * ONE);
     // The gateway's own free balance is untouched: routing never passes through it.
     expect(await avail(gateway)).to.equal(gBefore);
     await assertSolvent();
 
-    await expectReject(settle(program, staging, [1], () => [chanAG[2].key, chanGP[1].key, providers[1].balance]), /RecordNotVerified/);
+    await expectReject(settle(program, staging, [1], () => [chanAG[2].key, chanGP[1].key, gatewayPool, providers[1].balance]), /RecordNotVerified/);
   });
 
   it("refuses at stage time anything that would verify but never settle, and an incomplete batch", async () => {
@@ -420,10 +435,50 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     expect(bits).to.deep.equal(new Array(N_ROUTE).fill(true));
     for (let i = 0; i < N_ROUTE; i += 8) {
       const idx = Array.from({ length: 8 }, (_, k) => i + k);
-      await settle(program, staging, idx, (j) => [many[j].key, chanGP[j % 2].key, providers[j % 2].balance]);
+      await settle(program, staging, idx, (j) => [many[j].key, chanGP[j % 2].key, gatewayPool, providers[j % 2].balance]);
     }
     for (const ch of many) expect(await chan(ch)).to.deep.equal({ settled: 3 * ONE, locked: 5 * ONE });
     expect((await program.account.clearingResult.fetch(clearingPda(program.programId, staging))).applied.slice(0, 4)).to.deep.equal([255, 255, 255, 255]);
+    await assertSolvent();
+  });
+
+  it("pays every provider the same whichever order a gateway's routes settle in (the pool)", async () => {
+    // Two routes for ONE agent to two providers, settled newest first. Without the pool the
+    // second route's settlement would have swept the whole agent increase into provider 2's
+    // channel and provider 1 would have got nothing.
+    const agent = await makeParty(30 * ONE);
+    const ch = await openChannel(agent, gateway);
+    await lock(ch, 25 * ONE);
+    const gp0 = await chan(chanGP[0]);
+    const gp1 = await chan(chanGP[1]);
+    const r1 = routeRecord(ch, chanGP[0], 10 * ONE, gp0.settled + 9 * ONE);  // agent total 10, provider 1 +9
+    const r2 = routeRecord(ch, chanGP[1], 25 * ONE, gp1.settled + 14 * ONE); // agent total 25, provider 2 +14
+    const { bits } = await clear(KIND_ROUTE, buildRouteBatch([r1, r2]), 2);
+    expect(bits).to.deep.equal([true, true]);
+    const p1Before = await avail(providers[0]);
+    const p2Before = await avail(providers[1]);
+    const poolBefore = await poolBalance();
+    await settle(program, staging, [1], () => [ch.key, chanGP[1].key, gatewayPool, providers[1].balance]); // newest first
+    expect(await avail(providers[1])).to.equal(p2Before + 14 * ONE);
+    expect(await poolBalance()).to.equal(poolBefore + 11 * ONE); // 25 in, 14 out: provider 1's 9 + fee 2 waiting
+    await settle(program, staging, [0], () => [ch.key, chanGP[0].key, gatewayPool, providers[0].balance]);
+    expect(await avail(providers[0])).to.equal(p1Before + 9 * ONE); // paid from the pool, not from the agent
+    expect(await poolBalance()).to.equal(poolBefore + 2 * ONE);     // the gateway's margin
+    expect(await chan(ch)).to.deep.equal({ settled: 25 * ONE, locked: 0 });
+    // and the gateway can only take its margin out through the timelock
+    await program.methods.requestPoolUnlock(new anchor.BN(2 * ONE))
+      .accounts({ owner: gateway.owner.publicKey, participant: gateway.participant, config: configPda, pool: gatewayPool, balance: gateway.balance })
+      .signers([gateway.owner]).rpc();
+    await expectReject(program.methods.executePoolUnlock()
+      .accounts({ owner: gateway.owner.publicKey, participant: gateway.participant, config: configPda, pool: gatewayPool, balance: gateway.balance })
+      .signers([gateway.owner]).rpc(), /PoolUnlockLocked/);
+    await new Promise((r) => setTimeout(r, 3000));
+    const gBefore = await avail(gateway);
+    await program.methods.executePoolUnlock()
+      .accounts({ owner: gateway.owner.publicKey, participant: gateway.participant, config: configPda, pool: gatewayPool, balance: gateway.balance })
+      .signers([gateway.owner]).rpc();
+    expect(await avail(gateway)).to.equal(gBefore + 2 * ONE);
+    expect(await poolBalance()).to.equal(poolBefore);
     await assertSolvent();
   });
 

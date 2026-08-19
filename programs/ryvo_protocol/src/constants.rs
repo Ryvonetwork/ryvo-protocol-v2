@@ -24,6 +24,9 @@ pub const CHANNEL_SEED: &str = "channel";
 
 
 #[constant]
+pub const POOL_SEED: &str = "pool";
+
+#[constant]
 pub const CLEARING_SEED: &str = "clearing";
 
 // Domain-separation tags.

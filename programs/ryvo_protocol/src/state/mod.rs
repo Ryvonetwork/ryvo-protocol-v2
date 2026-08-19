@@ -2,12 +2,14 @@ pub mod balance;
 pub mod channel;
 pub mod config;
 pub mod participant;
+pub mod route_pool;
 pub mod token_config;
 
 pub use balance::*;
 pub use channel::*;
 pub use config::*;
 pub use participant::*;
+pub use route_pool::*;
 pub use token_config::*;
 
 #[cfg(test)]
@@ -31,6 +33,7 @@ mod tests {
             Channel::INIT_SPACE,
             32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 64 + 1 + 88
         );
+        assert_eq!(RoutePool::INIT_SPACE, 32 + 32 + 8 + 8 + 8 + 1 + 96);
     }
 
     /// Every non-singleton account must carry reserved space for at least two pubkeys plus two
@@ -44,6 +47,7 @@ mod tests {
             ("TokenConfig", 96),
             ("Balance", 96),
             ("Channel", 88),
+            ("RoutePool", 96),
         ] {
             assert!(
                 reserved >= MIN_RESERVED,

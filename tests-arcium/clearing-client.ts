@@ -118,6 +118,10 @@ export function buildRouteBatch(records: RouteRecord[]): Batch {
   };
 }
 
+/** The gateway's route pool for a mint: where agent money waits between a route settling and the provider claiming it. */
+export const routePoolPda = (programId: PublicKey, participant: PublicKey, mint: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("pool"), participant.toBuffer(), mint.toBuffer()], programId)[0];
+
 export const clearingPda = (programId: PublicKey, staging: PublicKey) =>
   PublicKey.findProgramAddressSync([Buffer.from("clearing"), staging.toBuffer()], programId)[0];
 
