@@ -91,6 +91,7 @@ for kind, base_settlements in (("route", 2), ("unilateral", 1)):
         ("previous: N=64 uni / 32 route, keys copied on-chain, buffer reuse",       32 if kind == "route" else 64, LEGACY_TX_BYTES, "prev", True, 32),
         ("NOW: N=64, dense records, on-chain padding (measured)",                  64, LEGACY_TX_BYTES, "dense", True, settle_per),
         ("NOW + transaction v1 (client ready; gate pending)",                       64, V1_TX_BYTES, "dense", True, settle_per),
+        ("NOW + v1 + 128 account locks (whole batch settles in one tx)",            64, V1_TX_BYTES, "dense", True, 64),
     ]
     for label, N, txb, mode, reuse, sp in configs:
         tx, cu, per_batch, batches = ryvo(N_REC, N, kind, txb, mode, reuse, sp)
