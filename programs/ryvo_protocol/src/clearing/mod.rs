@@ -9,8 +9,9 @@
 //! re-derived here from the same sealed bytes the circuit read, so a compromised MPC could at
 //! worst approve an invalid signature, and even then the payment is capped by what the payer had
 //! already locked in that specific channel. A route credits the agent's increase to the
-//! gateway's `RoutePool` and pays the provider from it, so settlement order never decides which
-//! provider a payment reaches.
+//! gateway's `RoutePool` and pays the provider from that pool and nothing else, so settlement
+//! order never decides which provider a payment reaches and gateway money backing routes sits in
+//! exactly one place.
 //!
 //! # Two phases
 //!
@@ -1083,15 +1084,13 @@ fn settle_route<'info>(
     channel_ag.settled_cumulative += moved_ag;
     pool.balance = pool.balance.checked_add(moved_ag).ok_or(RyvoError::MathOverflow)?;
 
-    // Step 2: the provider is paid its increase from the pool first (routed value plus anything
-    // the gateway put there), then from collateral the gateway locked in this specific channel.
+    // Step 2: the provider is paid its increase from the pool — routed value plus anything the
+    // gateway put there with `fund_route_pool`. The pool is the ONLY money a route can pay out:
+    // the gateway→provider channel's own lock is for direct (unilateral) payments from the
+    // gateway and is never touched here, so gateway money backing routes sits in one place.
     // Whatever is left in the pool is the gateway's margin, withdrawable after the timelock.
-    let delta_gp = target_gp.saturating_sub(channel_gp.settled_cumulative);
-    let from_pool = delta_gp.min(pool.balance);
-    let from_lock = (delta_gp - from_pool).min(channel_gp.locked_balance);
-    let moved_gp = from_pool + from_lock;
-    pool.balance -= from_pool;
-    channel_gp.locked_balance -= from_lock;
+    let moved_gp = payable(target_gp, channel_gp.settled_cumulative, pool.balance);
+    pool.balance -= moved_gp;
     channel_gp.settled_cumulative += moved_gp;
     provider_balance.available = provider_balance
         .available
@@ -1112,7 +1111,6 @@ fn settle_route<'info>(
         channel_gp_id: gp_id,
         moved_ag,
         moved_gp,
-        from_pool,
     });
     Ok(())
 }

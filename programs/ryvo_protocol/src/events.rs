@@ -150,9 +150,8 @@ pub struct RouteSettled {
     pub channel_gp_id: u64,
     /// Agent → pool.
     pub moved_ag: u64,
-    /// Pool + gateway channel lock → provider (`from_pool` of it came from the pool).
+    /// Pool → provider.
     pub moved_gp: u64,
-    pub from_pool: u64,
 }
 
 #[event]

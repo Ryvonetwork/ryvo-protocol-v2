@@ -9,7 +9,10 @@ use anchor_lang::prelude::*;
 /// route happens to settle first*, or a gateway could settle a later route ahead of an earlier
 /// one and keep money that was owed to the earlier provider. So the increase lands here, in a
 /// pool that belongs to the gateway but that every provider of that gateway is paid out of.
-/// Settlement order stops mattering; the gateway's fee is simply what remains.
+/// Settlement order stops mattering; the gateway's fee is simply what remains. It is also the
+/// *only* money a route pays providers from: a gateway that wants to extend credit ahead of agent
+/// inflows funds the pool, not individual provider channels (those channels' locks serve the
+/// gateway's own direct payments to a provider).
 ///
 /// The pool is timelocked exactly like a channel lock, and for the same reason: a provider that
 /// holds a countersigned commitment needs T to settle it before the gateway can take the float
