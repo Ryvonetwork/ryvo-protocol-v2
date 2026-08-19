@@ -62,6 +62,8 @@ pub enum RyvoError {
     InvalidStagingData,
     #[msg("Staging buffer is sealed")]
     StagingSealed,
+    #[msg("Staging buffer still has a batch in flight")]
+    StagingBusy,
     #[msg("Batch has not been cleared by Arcium yet")]
     BatchNotCleared,
     #[msg("Batch already has a recorded verdict")]

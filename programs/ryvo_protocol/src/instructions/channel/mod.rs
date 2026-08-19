@@ -109,6 +109,7 @@ pub fn create_channel_handler(
     channel.payee = ctx.accounts.payee_participant.key();
     channel.mint = ctx.accounts.mint.key();
     channel.authorized_signer = authorized_signer;
+    channel.signer_slots = crate::commitment::pack_pubkey(&authorized_signer.to_bytes());
     channel.settled_cumulative = 0;
     channel.locked_balance = 0;
     channel.pending_unlock_amount = 0;

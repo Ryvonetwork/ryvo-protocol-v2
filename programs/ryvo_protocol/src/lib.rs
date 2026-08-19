@@ -31,6 +31,52 @@ pub use state::*;
 
 declare_id!("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii");
 
+/// Heap allocator sized for `seal_and_queue_*`, which builds one Arcium account argument per
+/// staged channel (up to 2N + 3 = 131 of them) and then serialises the whole list into the
+/// queue CPI. Under a bump allocator that never frees, that exceeds the default 32 KB.
+///
+/// The runtime only maps what a transaction requests, so a transaction that allocates past 32 KB
+/// must carry `ComputeBudgetProgram::request_heap_frame(256 KiB)` — the clearing client does for
+/// every seal_and_queue. Every other instruction stays far below 32 KB and is unaffected.
+///
+/// The stock `BumpAllocator` hands out memory from the TOP of its region downward, so sizing it
+/// at 256 KiB would put the very first allocation of every instruction outside the 32 KiB a
+/// normal transaction maps. This one grows UPWARD from the heap start instead: instructions that
+/// stay under 32 KiB never touch unmapped memory, and only a transaction that requested a bigger
+/// frame can climb past it. It never frees (same as the default).
+#[cfg(all(feature = "custom-heap", target_os = "solana"))]
+mod heap {
+    use std::alloc::{GlobalAlloc, Layout};
+    const START: usize = anchor_lang::solana_program::entrypoint::HEAP_START_ADDRESS as usize;
+    const LEN: usize = 256 * 1024;
+
+    pub struct UpwardBump;
+
+    unsafe impl GlobalAlloc for UpwardBump {
+        #[inline]
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // The first word of the heap holds the bump pointer; heap memory starts zeroed.
+            let pos_ptr = START as *mut usize;
+            let mut pos = *pos_ptr;
+            if pos == 0 {
+                pos = START + core::mem::size_of::<usize>();
+            }
+            let aligned = (pos + layout.align() - 1) & !(layout.align() - 1);
+            let end = aligned + layout.size();
+            if end > START + LEN {
+                return core::ptr::null_mut();
+            }
+            *pos_ptr = end;
+            aligned as *mut u8
+        }
+        #[inline]
+        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: UpwardBump = UpwardBump;
+}
+
 #[arcium_program]
 pub mod ryvo_protocol {
     #[allow(unused_imports)]
@@ -175,8 +221,14 @@ pub mod ryvo_protocol {
 
     // --- clearing: staging ---
 
-    pub fn open_staging(ctx: Context<OpenStaging>, batch_seq: u64, kind: u8) -> Result<()> {
-        clearing::open_staging_handler(ctx, batch_seq, kind)
+    /// Create a relayer's reusable staging buffer (pre-created account) and its clearing result.
+    pub fn open_staging(ctx: Context<OpenStaging>, kind: u8) -> Result<()> {
+        clearing::open_staging_handler(ctx, kind)
+    }
+
+    /// Start the next batch in an existing buffer once the previous one is fully settled.
+    pub fn reset_staging(ctx: Context<ResetStaging>, kind: u8) -> Result<()> {
+        clearing::reset_staging_handler(ctx, kind)
     }
 
     pub fn stage_slots(ctx: Context<StageSlots>, slot_offset: u16, data: Vec<u8>) -> Result<()> {

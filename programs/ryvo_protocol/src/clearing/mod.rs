@@ -3,40 +3,51 @@
 //!
 //! # Trust split
 //!
-//! The MPC circuit answers exactly one question per staged record — *did the named key(s) sign
-//! this record's fields?* — and returns one bit. It never sees a balance. Everything about money
-//! (`min(delta, locked_balance)`, monotonicity, who gets credited) is re-derived here from the
-//! same sealed bytes the circuit read, so a compromised MPC could at worst approve an invalid
-//! signature, and even then the payment is capped by what the payer had already locked in that
-//! specific channel.
+//! The MPC circuit answers exactly one question per staged commitment — *did the channel's
+//! registered key(s) sign these fields?* — and returns one bit. It never sees a balance.
+//! Everything about money (`min(delta, locked_balance)`, monotonicity, who gets credited) is
+//! re-derived here from the same sealed bytes the circuit read, so a compromised MPC could at
+//! worst approve an invalid signature, and even then the payment is capped by what the payer had
+//! already locked in that specific channel.
 //!
 //! # Two phases
 //!
 //! 1. `clear_*_callback` — invoked by Arcium. Verifies the cluster's BLS signature over the
 //!    output and writes the bitmap into `ClearingResult`. Touches no channels, so it is one small
-//!    transaction whether the batch has 1 record or `N`.
+//!    transaction whether the batch has 1 commitment or `N`.
 //! 2. `settle_channels(indices)` — permissionless and repeatable. Reads the bitmap and the staged
-//!    slots, is handed the channel and balance accounts for the records it is asked to settle,
-//!    and moves funds. Batch size becomes a client-side loop over `indices` rather than a
-//!    protocol constraint.
+//!    slots, is handed the channel and balance accounts for the commitments it is asked to
+//!    settle, and moves funds.
+//!
+//! # Where the signing keys come from
+//!
+//! The relayer does not stage keys. It stages the **channel address**, and `seal_and_queue_*`
+//! hands the circuit that channel's `signer_slots` bytes as an account argument, read by the
+//! ARX nodes straight from the on-chain `Channel`. `settle_channels` then only has to check that
+//! the account it is handed *is* the staged address (and carries the staged `channel_id`). A
+//! relayer therefore cannot substitute a key: the key the circuit verified against is by
+//! construction the one registered on the channel that will be debited.
 //!
 //! # Slot layout
 //!
-//! A `StagingBuffer` is `MAX_SLOTS` × 32-byte slots. Every slot is one circuit parameter, in
-//! circuit declaration order, after the leading `domain` argument the program supplies from
-//! `Config`. Plaintext u128 = 16 LE bytes in the low half; packed bytes = 26 per slot, LE.
+//! A `StagingBuffer` is `MAX_SLOTS` × 32-byte slots. Plaintext u128 = 16 LE bytes in the low
+//! half; a channel address = one slot; packed signature bytes = 26 per slot, LE (3 slots).
 //!
 //! ```text
-//! unilateral (N records, 6N slots):   ids[N] | vk[2N] | sig[3N]
-//! route      (N records, 12N slots):  ids[N] | targets[N] | vk_agent[2N] | vk_gateway[2N] | sig_agent[3N] | sig_gateway[3N]
+//! unilateral (N commitments, 5N slots):  ids[N] | channel[N] | sig[3N]
+//! route      (N commitments, 10N slots): ids[N] | targets[N] | channel_ag[N] | channel_gp[N] | sig_agent[3N] | sig_gateway[3N]
 //! ```
 //!
-//! Records are column-major so the id column sits at the front of the buffer, which is what
-//! `settle_channels` reads most.
+//! The circuit's parameter order is `domain, ids, (targets,) keys…, sigs…`; the argument list is
+//! assembled from buffer ranges and per-channel account reads to match it exactly.
+//!
+//! # Buffer reuse
+//!
+//! A relayer creates one buffer (`open_staging`) and reuses it: `reset_staging` clears a fully
+//! settled (or failed) batch in place, so a steady-state batch costs no account creation, no
+//! close, and no rent churn.
 
-use crate::commitment::{
-    unpack_pair, unpack_pubkey, KIND_ROUTE, KIND_UNILATERAL, PUBKEY_SLOTS, SIG_SLOTS, SLOT,
-};
+use crate::commitment::{unpack_pair, KIND_ROUTE, KIND_UNILATERAL, SIG_SLOTS, SLOT};
 use crate::constants::{CLEARING_SEED, CONFIG_SEED};
 use crate::error::RyvoError;
 use crate::events::{BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled, RouteSettled};
@@ -46,30 +57,38 @@ use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
-/// Records per batch. Must equal `N` in `encrypted-ixs`. The circuit shape is fixed at compile
-/// time, so a shorter batch is padded by the relayer (repeat a valid record) and `count` tells
-/// `settle_channels` where the real records end.
-pub const N: usize = 32;
+/// Commitments per batch. Must equal `N_UNI` / `N_ROUTE` in `encrypted-ixs`. The circuit shape
+/// is fixed at compile time, so a shorter batch is padded by the relayer (repeat a valid
+/// commitment) and `count` tells `settle_channels` where the real ones end. 64 is the most an
+/// 8-byte bitmap holds. Route batches are 32 because each route needs two key account arguments
+/// and the Arcium program's own heap tops out between 66 and 131 account arguments per
+/// computation (measured on localnet: 66 works, 131 does not).
+pub const N_UNI: usize = 64;
+pub const N_ROUTE: usize = 32;
 
-pub const UNILATERAL_SLOTS_PER_RECORD: usize = 1 + PUBKEY_SLOTS + SIG_SLOTS; // 6
-pub const ROUTE_SLOTS_PER_RECORD: usize = 2 + 2 * PUBKEY_SLOTS + 2 * SIG_SLOTS; // 12
-pub const UNILATERAL_SLOTS: usize = N * UNILATERAL_SLOTS_PER_RECORD; // 192
-pub const ROUTE_SLOTS: usize = N * ROUTE_SLOTS_PER_RECORD; // 384
-pub const MAX_SLOTS: usize = ROUTE_SLOTS;
+pub const UNILATERAL_SLOTS_PER_RECORD: usize = 1 + 1 + SIG_SLOTS; // id, channel, sig = 5
+pub const ROUTE_SLOTS_PER_RECORD: usize = 2 + 2 + 2 * SIG_SLOTS; // ids, targets, 2 channels, 2 sigs = 10
+pub const UNILATERAL_SLOTS: usize = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 320
+pub const ROUTE_SLOTS: usize = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 320
+pub const MAX_SLOTS: usize = if UNILATERAL_SLOTS > ROUTE_SLOTS { UNILATERAL_SLOTS } else { ROUTE_SLOTS };
 
 /// Byte offset of `slots` inside the account: 8-byte discriminator + header.
 pub const SLOTS_OFFSET: usize = 8 + StagingBuffer::HEADER_LEN;
 
 // Column offsets (in slots) within a batch.
 pub const UNI_COL_IDS: usize = 0;
-pub const UNI_COL_VK: usize = N;
-pub const UNI_COL_SIG: usize = N + PUBKEY_SLOTS * N;
+pub const UNI_COL_CHANNEL: usize = N_UNI;
+pub const UNI_COL_SIG: usize = 2 * N_UNI;
 pub const RT_COL_IDS: usize = 0;
-pub const RT_COL_TARGETS: usize = N;
-pub const RT_COL_VK_A: usize = 2 * N;
-pub const RT_COL_VK_G: usize = 2 * N + PUBKEY_SLOTS * N;
-pub const RT_COL_SIG_A: usize = 2 * N + 2 * PUBKEY_SLOTS * N;
-pub const RT_COL_SIG_G: usize = 2 * N + 2 * PUBKEY_SLOTS * N + SIG_SLOTS * N;
+pub const RT_COL_TARGETS: usize = N_ROUTE;
+pub const RT_COL_CHANNEL_A: usize = 2 * N_ROUTE;
+pub const RT_COL_CHANNEL_G: usize = 3 * N_ROUTE;
+pub const RT_COL_SIG_A: usize = 4 * N_ROUTE;
+pub const RT_COL_SIG_G: usize = 4 * N_ROUTE + SIG_SLOTS * N_ROUTE;
+
+pub const fn batch_size(kind: u8) -> usize {
+    if kind == KIND_ROUTE { N_ROUTE } else { N_UNI }
+}
 
 const COMP_DEF_OFFSET_CLEAR_UNILATERAL: u32 = comp_def_offset("clear_unilateral");
 const COMP_DEF_OFFSET_CLEAR_ROUTE: u32 = comp_def_offset("clear_route");
@@ -78,22 +97,22 @@ const COMP_DEF_OFFSET_CLEAR_ROUTE: u32 = comp_def_offset("clear_route");
 // State
 // ============================================================================================
 
-/// One batch of staged records, owned by the relayer that pays its rent. Zero-copy: the buffer
-/// is 12 KB and `settle_channels` reads only the slots it needs.
+/// One relayer's batch buffer, reused across batches. Zero-copy: 20 KB, and `settle_channels`
+/// reads only the slots it needs.
 ///
-/// Not a PDA: at 12 KB it exceeds the 10 KB cap on accounts created inside a CPI, so the relayer
-/// creates it with `SystemProgram::create_account` in the same transaction and `open_staging`
-/// takes it via `#[account(zero)]`. Everything that must be tied to it (`ClearingResult`) is a
-/// PDA seeded by its address.
+/// Not a PDA: it exceeds the 10 KB cap on accounts created inside a CPI, so the relayer creates
+/// it with `SystemProgram::create_account` in the same transaction as `open_staging`, which takes
+/// it via `#[account(zero)]`. Everything tied to it (`ClearingResult`) is a PDA seeded by its
+/// address.
 #[account(zero_copy)]
 #[repr(C)]
 pub struct StagingBuffer {
-    /// Relayer-chosen label; not part of any derivation.
+    /// Increments on every `reset_staging`; identifies the batch in events.
     pub batch_seq: u64,
     pub relayer: Pubkey,
-    /// Real records staged; the rest of the batch is padding the circuit still processes.
+    /// Real commitments staged; the rest of the batch is padding the circuit still processes.
     pub count: u16,
-    /// `KIND_UNILATERAL` or `KIND_ROUTE`; fixed at `open_staging`.
+    /// `KIND_UNILATERAL` or `KIND_ROUTE` for the current batch.
     pub kind: u8,
     /// Set by `seal_and_queue_*`. Once sealed the slots are immutable — the circuit and
     /// `settle_channels` must read the same bytes.
@@ -115,13 +134,12 @@ impl StagingBuffer {
     }
 
     pub fn batch_slots(kind: u8) -> Result<usize> {
-        Ok(N * Self::slots_per_record(kind)?)
+        Ok(batch_size(kind) * Self::slots_per_record(kind)?)
     }
 }
 
-/// The verified verdict for one staging buffer. Created by `seal_and_queue_*`, written once by
-/// the callback, consumed by `settle_channels`.
-/// PDA seeds: `["clearing", staging]`.
+/// The verified verdict for the batch currently in a staging buffer. Created once with the
+/// buffer, reset with it. PDA seeds: `["clearing", staging]`.
 #[account]
 #[derive(InitSpace)]
 pub struct ClearingResult {
@@ -131,16 +149,37 @@ pub struct ClearingResult {
     /// True once the callback has landed with a successful output and `bitmap` is authoritative.
     pub verified: bool,
     pub bump: u8,
-    /// Bit i set ⇒ record i's signature(s) verified. Sized for up to 64 records.
+    /// Bit i set ⇒ commitment i's signature(s) verified.
     pub bitmap: [u8; 8],
-    /// Bit i set ⇒ record i has been processed by `settle_channels` in this batch. Stops
+    /// Bit i set ⇒ commitment i has been processed by `settle_channels` in this batch. Stops
     /// double-processing within the batch; monotonicity is the real replay guard.
     pub applied: [u8; 8],
     /// True if the computation itself failed (circuit fetch, abort, …). Nothing is verified;
-    /// the relayer closes this batch and re-stages. Recorded rather than erroring so the node's
-    /// callback transaction lands on the first attempt instead of burning its retries.
+    /// the relayer resets and re-stages. Recorded rather than erroring so the node's callback
+    /// transaction lands on the first attempt instead of burning its retries.
     pub failed: bool,
     pub _reserved: [u8; 31],
+}
+
+impl ClearingResult {
+    fn clear(&mut self, kind: u8, count: u16) {
+        self.count = count;
+        self.kind = kind;
+        self.verified = false;
+        self.failed = false;
+        self.bitmap = [0u8; 8];
+        self.applied = [0u8; 8];
+    }
+    /// Every verified commitment applied, or the computation failed.
+    pub fn is_done(&self) -> bool {
+        if self.failed {
+            return true;
+        }
+        if !self.verified {
+            return false;
+        }
+        (0..self.count as usize).all(|i| !bit(&self.bitmap, i) || bit(&self.applied, i))
+    }
 }
 
 fn bit(map: &[u8; 8], i: usize) -> bool {
@@ -223,21 +262,69 @@ pub struct InitClearRouteCompDef<'info> {
 
 #[derive(Accounts)]
 pub struct OpenStaging<'info> {
+    #[account(mut)]
     pub relayer: Signer<'info>,
     /// Pre-created by the relayer (`create_account` with this program as owner and
     /// `StagingBuffer::SPACE` bytes); `zero` requires an unused, program-owned account.
     #[account(zero)]
     pub staging: AccountLoader<'info, StagingBuffer>,
+    /// Lives as long as the buffer; reset with it.
+    #[account(
+        init,
+        payer = relayer,
+        space = 8 + ClearingResult::INIT_SPACE,
+        seeds = [CLEARING_SEED.as_bytes(), staging.key().as_ref()],
+        bump,
+    )]
+    pub clearing_result: Box<Account<'info, ClearingResult>>,
+    pub system_program: Program<'info, System>,
 }
 
-pub fn open_staging_handler(ctx: Context<OpenStaging>, batch_seq: u64, kind: u8) -> Result<()> {
+pub fn open_staging_handler(ctx: Context<OpenStaging>, kind: u8) -> Result<()> {
     StagingBuffer::slots_per_record(kind)?;
     let mut s = ctx.accounts.staging.load_init()?;
-    s.batch_seq = batch_seq;
+    s.batch_seq = 0;
     s.relayer = ctx.accounts.relayer.key();
     s.count = 0;
     s.kind = kind;
     s.sealed = 0;
+    let r = &mut ctx.accounts.clearing_result;
+    r.staging = ctx.accounts.staging.key();
+    r.bump = ctx.bumps.clearing_result;
+    r._reserved = [0u8; 31];
+    r.clear(kind, 0);
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct ResetStaging<'info> {
+    pub relayer: Signer<'info>,
+    #[account(mut, has_one = relayer)]
+    pub staging: AccountLoader<'info, StagingBuffer>,
+    #[account(
+        mut,
+        seeds = [CLEARING_SEED.as_bytes(), staging.key().as_ref()],
+        bump = clearing_result.bump,
+        has_one = staging,
+    )]
+    pub clearing_result: Box<Account<'info, ClearingResult>>,
+}
+
+/// Start the next batch in the same buffer. Allowed once the previous batch is done — every
+/// verified commitment applied, or the computation failed — or if it was never queued. Slots are
+/// not zeroed: the relayer overwrites what it uses and `count` bounds what is read.
+pub fn reset_staging_handler(ctx: Context<ResetStaging>, kind: u8) -> Result<()> {
+    StagingBuffer::slots_per_record(kind)?;
+    let mut s = ctx.accounts.staging.load_mut()?;
+    let r = &mut ctx.accounts.clearing_result;
+    if s.sealed == 1 {
+        require!(r.is_done(), RyvoError::StagingBusy);
+    }
+    s.batch_seq = s.batch_seq.checked_add(1).ok_or(RyvoError::MathOverflow)?;
+    s.count = 0;
+    s.kind = kind;
+    s.sealed = 0;
+    r.clear(kind, 0);
     Ok(())
 }
 
@@ -248,9 +335,8 @@ pub struct StageSlots<'info> {
     pub staging: AccountLoader<'info, StagingBuffer>,
 }
 
-/// Write raw slot bytes at a slot offset. Sent in v1 transactions (4,096 bytes) — ~120 slots
-/// per transaction. The relayer lays the columns out client-side; the program only checks bounds
-/// and that the buffer is still open.
+/// Write raw slot bytes at a slot offset. The relayer lays the columns out client-side; the
+/// program only checks bounds and that the buffer is still open.
 pub fn stage_slots_handler(ctx: Context<StageSlots>, slot_offset: u16, data: Vec<u8>) -> Result<()> {
     require!(data.len() % SLOT == 0, RyvoError::InvalidStagingData);
     let mut s = ctx.accounts.staging.load_mut()?;
@@ -280,11 +366,10 @@ pub struct SealAndQueueUnilateral<'info> {
     #[account(mut, has_one = relayer)]
     pub staging: AccountLoader<'info, StagingBuffer>,
     #[account(
-        init,
-        payer = relayer,
-        space = 8 + ClearingResult::INIT_SPACE,
+        mut,
         seeds = [CLEARING_SEED.as_bytes(), staging.key().as_ref()],
-        bump,
+        bump = clearing_result.bump,
+        has_one = staging,
     )]
     pub clearing_result: Box<Account<'info, ClearingResult>>,
 
@@ -325,11 +410,10 @@ pub struct SealAndQueueRoute<'info> {
     #[account(mut, has_one = relayer)]
     pub staging: AccountLoader<'info, StagingBuffer>,
     #[account(
-        init,
-        payer = relayer,
-        space = 8 + ClearingResult::INIT_SPACE,
+        mut,
         seeds = [CLEARING_SEED.as_bytes(), staging.key().as_ref()],
-        bump,
+        bump = clearing_result.bump,
+        has_one = staging,
     )]
     pub clearing_result: Box<Account<'info, ClearingResult>>,
 
@@ -358,13 +442,21 @@ pub struct SealAndQueueRoute<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-/// Shared body: seal the buffer, initialise the result, build the argument list. The domain is
-/// supplied by the program from `Config`, never by the relayer, so a batch cannot be verified
-/// against a foreign deployment's domain.
+fn staged_pubkey(s: &StagingBuffer, col: usize, i: usize) -> Pubkey {
+    Pubkey::new_from_array(s.slots[col + i])
+}
+
+fn range(staging: Pubkey, col: usize, slots: usize) -> (Pubkey, u32, u32) {
+    (staging, (SLOTS_OFFSET + col * SLOT) as u32, (slots * SLOT) as u32)
+}
+
+/// Shared body: seal the buffer, reset the result for this batch, and build the argument list in
+/// the circuit's parameter order. The domain comes from `Config`, never from the relayer, so a
+/// batch cannot be verified against a foreign deployment's domain; the keys come from the
+/// `Channel` accounts the relayer named, never from staged bytes.
 fn seal_common(
     staging_loader: &AccountLoader<StagingBuffer>,
     clearing_result: &mut ClearingResult,
-    clearing_bump: u8,
     config: &Config,
     kind: u8,
     count: u16,
@@ -372,25 +464,51 @@ fn seal_common(
     let mut s = staging_loader.load_mut()?;
     require!(s.kind == kind, RyvoError::InvalidStagingKind);
     require!(s.sealed == 0, RyvoError::StagingSealed);
-    require!(count as usize >= 1 && count as usize <= N, RyvoError::InvalidStagingData);
+    require!(count as usize >= 1 && count as usize <= batch_size(kind), RyvoError::InvalidStagingData);
     s.count = count;
     s.sealed = 1;
+    clearing_result.clear(kind, count);
 
-    clearing_result.staging = staging_loader.key();
-    clearing_result.count = count;
-    clearing_result.kind = kind;
-    clearing_result.verified = false;
-    clearing_result.bump = clearing_bump;
-    clearing_result.bitmap = [0u8; 8];
-    clearing_result.applied = [0u8; 8];
-    clearing_result.failed = false;
-    clearing_result._reserved = [0u8; 31];
-
-    let batch_len = (StagingBuffer::batch_slots(kind)? * SLOT) as u32;
-    Ok(ArgBuilder::new()
-        .plaintext_u128(crate::commitment::domain_slot(&config.message_domain))
-        .account(staging_loader.key(), SLOTS_OFFSET as u32, batch_len)
-        .build())
+    // Built by hand rather than through ArgBuilder so the vectors are sized once: the on-chain
+    // bump allocator never frees, so a growing Vec leaves every earlier buffer behind.
+    let key = staging_loader.key();
+    let n_accounts = match kind {
+        KIND_UNILATERAL => N_UNI + 2,
+        KIND_ROUTE => 2 * N_ROUTE + 2,
+        _ => return Err(RyvoError::InvalidStagingKind.into()),
+    };
+    let mut args: Vec<ArgumentRef> = Vec::with_capacity(n_accounts + 1);
+    let mut accounts: Vec<AccountArgument> = Vec::with_capacity(n_accounts);
+    let push_account = |accounts: &mut Vec<AccountArgument>, args: &mut Vec<ArgumentRef>, pubkey: Pubkey, offset: u32, length: u32| {
+        args.push(ArgumentRef::Account(accounts.len() as u8));
+        accounts.push(AccountArgument { pubkey, offset, length });
+    };
+    args.push(ArgumentRef::PlaintextU128(0)); // index into values_128_bit
+    let values_128_bit = vec![crate::commitment::domain_slot(&config.message_domain)];
+    match kind {
+        KIND_UNILATERAL => {
+            let (k, o, l) = range(key, UNI_COL_IDS, N_UNI);
+            push_account(&mut accounts, &mut args, k, o, l);
+            for i in 0..N_UNI {
+                push_account(&mut accounts, &mut args, staged_pubkey(&s, UNI_COL_CHANNEL, i), Channel::SIGNER_SLOTS_OFFSET as u32, Channel::SIGNER_SLOTS_LEN as u32);
+            }
+            let (k, o, l) = range(key, UNI_COL_SIG, SIG_SLOTS * N_UNI);
+            push_account(&mut accounts, &mut args, k, o, l);
+        }
+        KIND_ROUTE => {
+            let (k, o, l) = range(key, RT_COL_IDS, 2 * N_ROUTE); // ids then targets are adjacent
+            push_account(&mut accounts, &mut args, k, o, l);
+            for col in [RT_COL_CHANNEL_A, RT_COL_CHANNEL_G] {
+                for i in 0..N_ROUTE {
+                    push_account(&mut accounts, &mut args, staged_pubkey(&s, col, i), Channel::SIGNER_SLOTS_OFFSET as u32, Channel::SIGNER_SLOTS_LEN as u32);
+                }
+            }
+            let (k, o, l) = range(key, RT_COL_SIG_A, 2 * SIG_SLOTS * N_ROUTE); // agent then gateway sigs are adjacent
+            push_account(&mut accounts, &mut args, k, o, l);
+        }
+        _ => unreachable!(),
+    }
+    Ok(ArgumentList { args, byte_arrays: Vec::new(), plaintext_numbers: Vec::new(), values_128_bit, accounts })
 }
 
 pub fn seal_and_queue_unilateral_handler(
@@ -402,7 +520,6 @@ pub fn seal_and_queue_unilateral_handler(
     let args = seal_common(
         &ctx.accounts.staging,
         &mut ctx.accounts.clearing_result,
-        ctx.bumps.clearing_result,
         &ctx.accounts.config,
         KIND_UNILATERAL,
         count,
@@ -439,7 +556,6 @@ pub fn seal_and_queue_route_handler(
     let args = seal_common(
         &ctx.accounts.staging,
         &mut ctx.accounts.clearing_result,
-        ctx.bumps.clearing_result,
         &ctx.accounts.config,
         KIND_ROUTE,
         count,
@@ -526,11 +642,11 @@ pub fn record_failure(result: &mut ClearingResult) -> Result<()> {
     Ok(())
 }
 
-/// Record the verified bits. Idempotent guard: a callback may only land once per result.
-pub fn record_bitmap(result: &mut ClearingResult, bits: &[bool; N], kind: u8) -> Result<()> {
+/// Record the verified bits. Idempotent guard: a callback may only land once per batch.
+pub fn record_bitmap(result: &mut ClearingResult, bits: &[bool], kind: u8) -> Result<()> {
     require!(!result.verified, RyvoError::BatchAlreadyCleared);
-    result.failed = false;
     require!(result.kind == kind, RyvoError::InvalidStagingKind);
+    result.failed = false;
     let mut bitmap = [0u8; 8];
     let mut set = 0u16;
     for (i, b) in bits.iter().enumerate() {
@@ -569,9 +685,9 @@ pub struct SettleChannels<'info> {
     //   route:      [channel_ag (mut), channel_gp (mut), provider_balance (mut)]
 }
 
-/// Move funds for the listed records. Anyone may call it; a wrong or missing account simply
-/// fails the transaction and can be retried, and a record that moves nothing (`delta <= 0` or
-/// nothing locked) is skipped rather than failing the batch.
+/// Move funds for the listed commitments. Anyone may call it; a wrong or missing account simply
+/// fails the transaction and can be retried, and a commitment that moves nothing (`delta <= 0`
+/// or nothing locked) is skipped rather than failing the batch.
 pub fn settle_channels_handler<'info>(
     ctx: Context<'info, SettleChannels<'info>>,
     indices: Vec<u8>,
@@ -579,6 +695,7 @@ pub fn settle_channels_handler<'info>(
     let result = &mut ctx.accounts.clearing_result;
     require!(result.verified, RyvoError::BatchNotCleared);
     let staging = ctx.accounts.staging.load()?;
+    require!(staging.sealed == 1 && staging.kind == result.kind, RyvoError::InvalidStagingKind);
     let kind = staging.kind;
     let per = match kind {
         KIND_UNILATERAL => 2,
@@ -613,13 +730,6 @@ fn load_mut<'info, T: AccountSerialize + AccountDeserialize + Owner + Clone>(
     Account::<T>::try_from(info)
 }
 
-fn staged_pubkey(staging: &StagingBuffer, col: usize, i: usize) -> [u8; 32] {
-    unpack_pubkey(&[
-        staging.slots[col + PUBKEY_SLOTS * i],
-        staging.slots[col + PUBKEY_SLOTS * i + 1],
-    ])
-}
-
 fn staged_u128(staging: &StagingBuffer, col: usize, i: usize) -> u128 {
     let mut b = [0u8; 16];
     b.copy_from_slice(&staging.slots[col + i][..16]);
@@ -638,19 +748,15 @@ fn settle_unilateral<'info>(
     accs: &'info [AccountInfo<'info>],
 ) -> Result<()> {
     let (channel_id, target) = unpack_pair(staged_u128(staging, UNI_COL_IDS, i));
-    let signer = staged_pubkey(staging, UNI_COL_VK, i);
+    let staged_channel = staged_pubkey(staging, UNI_COL_CHANNEL, i);
 
+    // The circuit verified the signature under the key stored in the channel account at
+    // `staged_channel`; the account we are handed must be that one, and it must carry the id
+    // that was inside the signed message.
+    require!(accs[0].key() == staged_channel, RyvoError::SettlementChannelMismatch);
     let mut channel = load_mut::<Channel>(&accs[0])?;
     let mut payee_balance = load_mut::<Balance>(&accs[1])?;
-
-    // Bind the staged record to the accounts we were handed. The signature was verified over
-    // (channel_id, target) under `signer`; the channel must be the one with that id and that
-    // registered signer, and the balance must be its payee's balance for its mint.
     require!(channel.channel_id == channel_id, RyvoError::SettlementChannelMismatch);
-    require!(
-        channel.authorized_signer.to_bytes() == signer,
-        RyvoError::SettlementSignerMismatch
-    );
     require!(
         payee_balance.participant == channel.payee && payee_balance.mint == channel.mint,
         RyvoError::SettlementBalanceMismatch
@@ -685,23 +791,17 @@ fn settle_route<'info>(
 ) -> Result<()> {
     let (ag_id, gp_id) = unpack_pair(staged_u128(staging, RT_COL_IDS, i));
     let (target_ag, target_gp) = unpack_pair(staged_u128(staging, RT_COL_TARGETS, i));
-    let signer_agent = staged_pubkey(staging, RT_COL_VK_A, i);
-    let signer_gateway = staged_pubkey(staging, RT_COL_VK_G, i);
+    let staged_ag = staged_pubkey(staging, RT_COL_CHANNEL_A, i);
+    let staged_gp = staged_pubkey(staging, RT_COL_CHANNEL_G, i);
 
+    require!(accs[0].key() == staged_ag, RyvoError::SettlementChannelMismatch);
+    require!(accs[1].key() == staged_gp, RyvoError::SettlementChannelMismatch);
     let mut channel_ag = load_mut::<Channel>(&accs[0])?;
     let mut channel_gp = load_mut::<Channel>(&accs[1])?;
     let mut provider_balance = load_mut::<Balance>(&accs[2])?;
 
     require!(channel_ag.channel_id == ag_id, RyvoError::SettlementChannelMismatch);
     require!(channel_gp.channel_id == gp_id, RyvoError::SettlementChannelMismatch);
-    require!(
-        channel_ag.authorized_signer.to_bytes() == signer_agent,
-        RyvoError::SettlementSignerMismatch
-    );
-    require!(
-        channel_gp.authorized_signer.to_bytes() == signer_gateway,
-        RyvoError::SettlementSignerMismatch
-    );
     // The two legs must actually chain: the gateway is the payee of one and the payer of the
     // other, in the same asset.
     require!(
@@ -759,7 +859,6 @@ pub struct CloseStaging<'info> {
     pub relayer: Signer<'info>,
     #[account(mut, close = relayer, has_one = relayer)]
     pub staging: AccountLoader<'info, StagingBuffer>,
-    /// Present iff the batch was queued. Closed alongside.
     #[account(
         mut,
         close = relayer,
@@ -767,26 +866,14 @@ pub struct CloseStaging<'info> {
         bump = clearing_result.bump,
         has_one = staging,
     )]
-    pub clearing_result: Option<Box<Account<'info, ClearingResult>>>,
+    pub clearing_result: Box<Account<'info, ClearingResult>>,
 }
 
-/// Reclaim rent. Allowed once every verified record has been applied (or the batch was never
-/// queued). Unverified records are simply invalid signatures and owe nothing.
+/// Reclaim rent for a buffer the relayer no longer needs. Same precondition as `reset_staging`.
 pub fn close_staging_handler(ctx: Context<CloseStaging>) -> Result<()> {
     let s = ctx.accounts.staging.load()?;
     if s.sealed == 1 {
-        let r = ctx
-            .accounts
-            .clearing_result
-            .as_ref()
-            .ok_or(RyvoError::InvalidSettlementAccounts)?;
-        if r.failed {
-            return Ok(());
-        }
-        require!(r.verified, RyvoError::BatchNotCleared);
-        for i in 0..r.count as usize {
-            require!(!bit(&r.bitmap, i) || bit(&r.applied, i), RyvoError::BatchNotFullyApplied);
-        }
+        require!(ctx.accounts.clearing_result.is_done(), RyvoError::StagingBusy);
     }
     Ok(())
 }

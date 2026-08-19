@@ -50,15 +50,17 @@ import {
   signCommitment,
 } from "../tests/commitment-client";
 import {
-  N,
+  N_ROUTE,
   ROUTE_SLOTS,
   RouteRecord,
   awaitClearing,
   bitmapBits,
   buildRouteBatch,
   clearingPda,
+  closeStaging,
   ensureArciumSigner,
   ensureCompDef,
+  openStaging,
   sealAndQueue,
   stageBatch,
   stagingTxCount,
@@ -141,7 +143,9 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   const chanGP: Chan[] = [];
   const records: RouteRecord[] = [];
   const routeOf: { ag: number; gp: number; targetAg: number; targetGp: number; increment: number }[] = [];
-  const stagings: { staging: PublicKey; count: number; bits: boolean[] }[] = [];
+  /** The relayer's single reusable staging buffer. */
+  let staging: PublicKey;
+  const batches: { first: number; count: number; bits: boolean[] }[] = [];
   const stats = { tx: { setup: 0, stage: 0, queue: 0, callback: 0, settle: 0 }, solStart: 0, t: {} as Record<string, number> };
   const startedAt = Date.now();
 
@@ -265,49 +269,45 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const c: RouteCommitment = { kind: KIND_ROUTE, messageDomain: domain, channelAgId: chanAG[i].id, channelGpId: chanGP[gp].id, targetAg: BigInt(targetAg), targetGp: BigInt(targetGp) };
       const a = signCommitment(agents[i].seed, c);
       const g = signCommitment(gateway.seed, c);
-      records.push({ commitment: c, agentSigner: a.publicKey, agentSignature: a.signature, gatewaySigner: g.publicKey, gatewaySignature: g.signature });
+      records.push({ commitment: c, channelAg: chanAG[i].key, channelGp: chanGP[gp].key, agentSignature: a.signature, gatewaySignature: g.signature });
       routeOf.push({ ag: i, gp, targetAg, targetGp, increment });
     }
     console.log(`    ${records.length} route commitments, ${records.length * 2} signatures`);
   });
 
-  it("4. stages, seals and queues the batches; Arcium clears them", async () => {
+  it("4. stages, seals and queues the batches through one reusable buffer; Arcium clears them", async () => {
     const t0 = Date.now();
-    const batches: RouteRecord[][] = [];
-    for (let i = 0; i < records.length; i += N) batches.push(records.slice(i, i + N));
-    // Stage all, then queue all, then wait for all — the MPC runs the batches back to back.
     const v1 = await supportsTxV1(program, payer);
-    const perBatch = 1 + (v1 ? stagingTxCount(ROUTE_SLOTS).v1 : stagingTxCount(ROUTE_SLOTS).legacy);
-    const staged = await pmap(batches, async (b, k) => {
-      const staging = await stageBatch(program, payer, BigInt(Date.now()) * 100n + BigInt(k), KIND_ROUTE, buildRouteBatch(b));
-      stats.tx.stage += perBatch; // open+create, then slot chunks
-      return { staging, count: b.length };
-    }, 2);
-    console.log(`    staged ${batches.length} batches in ${v1 ? "v1 (4,096 B)" : "legacy (1,232 B)"} transactions, ${perBatch} tx per batch (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-    if (!v1) console.log(`    (transaction v1 not active on this cluster; with it staging would be ${1 + stagingTxCount(ROUTE_SLOTS).v1} tx per batch)`);
-    const queued = [];
-    for (const s of staged) {
-      queued.push({ ...s, ...(await sealAndQueue(program, payer, s.staging, KIND_ROUTE, s.count)) });
-      stats.tx.queue++;
-    }
-    console.log(`    queued ${queued.length} computations`);
-    for (const q of queued) {
+    console.log(`    staging in ${v1 ? "v1 (4,096 B)" : "legacy (1,232 B)"} transactions; N=${N_ROUTE} commitments per batch`);
+    if (!v1) console.log(`    (transaction v1 not active on this cluster; with it a full route batch would stage in ${stagingTxCount(ROUTE_SLOTS).v1} tx instead of ${stagingTxCount(ROUTE_SLOTS).legacy})`);
+    staging = await openStaging(program, payer, KIND_ROUTE);
+    stats.tx.stage += 1; // create + open (once per buffer, not per batch)
+    for (let first = 0, k = 0; first < records.length; first += N_ROUTE, k++) {
+      const batch = records.slice(first, first + N_ROUTE);
       const t1 = Date.now();
-      await awaitClearing(provider, program, q.computationOffset);
-      const r = await program.account.clearingResult.fetch(q.clearingResult);
-      const bits = bitmapBits(r.bitmap as number[], q.count);
-      console.log(`    batch ${q.staging.toBase58().slice(0, 8)}… verified=${r.verified} ${bits.filter(Boolean).length}/${q.count} valid (${((Date.now() - t1) / 1000).toFixed(0)}s)`);
+      const { tailIx, txCount } = await stageBatch(program, payer, staging, KIND_ROUTE, buildRouteBatch(batch), { fresh: k === 0 });
+      stats.tx.stage += txCount;
+      const { computationOffset, clearingResult } = await sealAndQueue(program, payer, staging, KIND_ROUTE, batch.length, tailIx);
+      stats.tx.queue++;
+      await awaitClearing(provider, program, computationOffset);
+      const r = await program.account.clearingResult.fetch(clearingResult);
+      const bits = bitmapBits(r.bitmap as number[], batch.length);
+      stats.tx.callback++;
+      console.log(`    batch ${k}: ${batch.length} routes staged in ${txCount + 1} tx${tailIx ? " (tail merged into seal)" : ""}, verified=${r.verified} ${bits.filter(Boolean).length}/${batch.length} valid (${((Date.now() - t1) / 1000).toFixed(0)}s)`);
       expect(r.verified).to.be.true;
       expect(bits.every(Boolean)).to.be.true;
-      stats.tx.callback++;
-      stagings.push({ staging: q.staging, count: q.count, bits });
+      batches.push({ first, count: batch.length, bits });
+      // Settle right away so the buffer can be reset for the next batch (settlement is step 5's
+      // job in the report; here it is interleaved because reuse requires it).
+      await settleBatch(batches[batches.length - 1]);
     }
     stats.t.clear = Date.now() - t0;
   });
 
-  it("5. settles every batch in one v0 transaction through an address lookup table", async () => {
-    const t0 = Date.now();
-    // Every account settlement touches: 100 agent channels + 10 gateway channels + 10 provider balances.
+  /** One v0 tx per 32 routes through the lookup table (98 accounts / 126 locks). */
+  let table: Awaited<ReturnType<typeof connection.getAddressLookupTable>>["value"] | null = null;
+  async function ensureLookupTable() {
+    if (table) return table;
     const addresses = [...chanAG.map((c) => c.key), ...chanGP.map((c) => c.key), ...providers.map((p) => p.balance)];
     const slot = await connection.getSlot("finalized");
     const [createIx, lut] = AddressLookupTableProgram.createLookupTable({ authority: payer.publicKey, payer: payer.publicKey, recentSlot: slot });
@@ -316,38 +316,37 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const ix = AddressLookupTableProgram.extendLookupTable({ lookupTable: lut, authority: payer.publicKey, payer: payer.publicKey, addresses: addresses.slice(i, i + 25) });
       await retry(() => provider.sendAndConfirm(new anchor.web3.Transaction().add(ix), []), 5, "lut extend");
     }
-    // A table becomes usable one slot after its last extension.
     await sleep(2000);
-    const table = (await connection.getAddressLookupTable(lut)).value!;
-    console.log(`    lookup table ${lut.toBase58()} with ${table.state.addresses.length} addresses`);
-
-    let recordIndex = 0;
-    for (const s of stagings) {
-      const indices = Array.from({ length: s.count }, (_, i) => i);
+    table = (await connection.getAddressLookupTable(lut)).value!;
+    console.log(`    lookup table ${lut.toBase58()} with ${table!.state.addresses.length} addresses`);
+    return table!;
+  }
+  async function settleBatch(b: { first: number; count: number }) {
+    const t = await ensureLookupTable();
+    for (let start = 0; start < b.count; start += 32) {
+      const indices = Array.from({ length: Math.min(32, b.count - start) }, (_, i) => start + i);
       const remaining = indices.flatMap((i) => {
-        const r = routeOf[recordIndex + i];
+        const r = routeOf[b.first + i];
         return [chanAG[r.ag].key, chanGP[r.gp].key, providers[r.gp].balance].map((pubkey) => ({ pubkey, isWritable: true, isSigner: false }));
       });
       const ix = await program.methods.settleChannels(Buffer.from(indices))
-        .accounts({ staging: s.staging, clearingResult: clearingPda(programId, s.staging) })
+        .accounts({ staging, clearingResult: clearingPda(programId, staging) })
         .remainingAccounts(remaining)
         .instruction();
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
-      const msg = new TransactionMessage({
-        payerKey: payer.publicKey,
-        recentBlockhash: blockhash,
-        instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), ix],
-      }).compileToV0Message([table]);
+      const msg = new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: blockhash, instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), ix] }).compileToV0Message([t!]);
       const vtx = new VersionedTransaction(msg);
       vtx.sign([payer]);
       const sig = await retry(() => connection.sendTransaction(vtx, { maxRetries: 3 }), 3, "settle");
       await connection.confirmTransaction(sig, "confirmed");
       const got = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0 });
-      console.log(`    settled ${s.count} routes in one tx: ${got?.meta?.computeUnitsConsumed} CU, ${remaining.length + 2} accounts`);
+      console.log(`    settled ${indices.length} routes in one tx: ${got?.meta?.computeUnitsConsumed} CU, ${remaining.length + 2} accounts`);
       stats.tx.settle++;
-      recordIndex += s.count;
     }
-    stats.t.settle = Date.now() - t0;
+  }
+
+  it("5. settled every batch in v0 transactions through an address lookup table (interleaved above)", async () => {
+    expect(stats.tx.settle).to.be.greaterThan(0);
   });
 
   it("6. asserts every balance and the solvency invariant, then reclaims staging rent", async () => {
@@ -374,15 +373,13 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     expect(vaultAcc.amount.toString()).to.equal((sumAvail + sumLocked).toString());
     console.log(`    providers paid ${expProvider.reduce((a, b) => a + b, 0) / ONE}, gateway fees ${expFee.reduce((a, b) => a + b, 0) / ONE}, vault ${Number(vaultAcc.amount) / ONE} == available ${Number(sumAvail) / ONE} + locked ${Number(sumLocked) / ONE}`);
 
-    for (const s of stagings) {
-      await program.methods.closeStaging().accounts({ relayer: payer.publicKey, staging: s.staging, clearingResult: clearingPda(programId, s.staging) }).rpc();
-    }
+    await closeStaging(program, payer, staging);
     const solEnd = await connection.getBalance(payer.publicKey);
     const total = Object.values(stats.tx).reduce((a, b) => a + b, 0);
     console.log(`\n    ==== ${AGENTS} routed payments cleared ====`);
     console.log(`    tx: setup ${stats.tx.setup} | stage ${stats.tx.stage} | queue ${stats.tx.queue} | callback ${stats.tx.callback} | settle ${stats.tx.settle} | total ${total}`);
     console.log(`    clearing path only (stage+queue+callback+settle): ${stats.tx.stage + stats.tx.queue + stats.tx.callback + stats.tx.settle} tx for ${AGENTS} routes`);
-    console.log(`    time: setup ${(stats.t.setup / 1000).toFixed(0)}s, clear ${(stats.t.clear / 1000).toFixed(0)}s, settle ${(stats.t.settle / 1000).toFixed(0)}s, total ${((Date.now() - startedAt) / 1000).toFixed(0)}s`);
+    console.log(`    time: setup ${(stats.t.setup / 1000).toFixed(0)}s, clear+settle ${(stats.t.clear / 1000).toFixed(0)}s, total ${((Date.now() - startedAt) / 1000).toFixed(0)}s`);
     console.log(`    SOL: ${((stats.solStart - solEnd) / 1e9).toFixed(4)} spent by the wallet (incl. rent parked in ${AGENTS + PROVIDERS + 1} participants/balances/channels)`);
   });
 });

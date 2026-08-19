@@ -23,7 +23,7 @@ describe("ryvo_protocol / step 0: toolchain", () => {
 
   it("loads the program at the declared address", () => {
     expect(program.programId.toBase58()).to.equal(
-      "7QBj1XUYe4RbMxJd8H42gWR7QWeRiRuYQbwbwAjAmjqQ",
+      "DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii",
     );
   });
 

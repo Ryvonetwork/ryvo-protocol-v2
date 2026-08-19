@@ -9,7 +9,8 @@ crate-type = ["cdylib", "lib"]
 name = "ryvo_protocol"
 
 [features]
-default = []
+# custom-heap: see the allocator in lib.rs — seal_and_queue_* needs more than the 32 KB default.
+default = ["custom-heap"]
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

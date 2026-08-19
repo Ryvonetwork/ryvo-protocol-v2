@@ -40,9 +40,10 @@ import {
   bitmapBits,
   buildRouteBatch,
   buildUnilateralBatch,
-  clearingPda,
+  closeStaging,
   ensureArciumSigner,
   ensureCompDef,
+  openStaging,
   sealAndQueue,
   settle,
   stageBatch,
@@ -81,7 +82,9 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   let providers: Party[] = [];
   const chanAG: Chan[] = []; // agent i -> gateway
   const chanGP: Chan[] = []; // gateway -> provider j
-  let batchSeq = 1n;
+  /** The relayer's one reusable staging buffer, opened in `before`, closed at the end. */
+  let staging: PublicKey;
+  let firstBatch = true;
 
   async function makeParty(deposit = 0): Promise<Party> {
     const owner = Keypair.generate();
@@ -142,7 +145,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const s = signCommitment(ch.payer.seed, uni(ch, target));
     const signature = Buffer.from(s.signature);
     if (corrupt) signature[3] ^= 0xff;
-    return { commitment: uni(ch, target), signer: s.publicKey, signature };
+    return { commitment: uni(ch, target), channel: ch.key, signature };
   };
   const routeRecord = (ag: Chan, gp: Chan, targetAg: number, targetGp: number, corruptGateway = false): RouteRecord => {
     const c = route(ag, gp, targetAg, targetGp);
@@ -150,7 +153,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const g = signCommitment(gp.payer.seed, c);
     const gatewaySignature = Buffer.from(g.signature);
     if (corruptGateway) gatewaySignature[10] ^= 0x01;
-    return { commitment: c, agentSigner: a.publicKey, agentSignature: a.signature, gatewaySigner: g.publicKey, gatewaySignature };
+    return { commitment: c, channelAg: ag.key, channelGp: gp.key, agentSignature: a.signature, gatewaySignature };
   };
 
   async function chan(ch: Chan) {
@@ -169,21 +172,21 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     expect(vaultAcc.amount.toString()).to.equal((sumAvailable + sumLocked).toString(), "solvency invariant violated");
   }
 
-  /** Stage + queue + wait; returns the staging key and the bitmap. */
+  /** Stage into the shared buffer (resetting it) + queue + wait; returns the bitmap. */
   async function clear(kind: number, slots: Buffer, count: number) {
-    const seq = batchSeq++;
     const t0 = Date.now();
-    const staging = await stageBatch(program, relayer, seq, kind, slots);
-    const { computationOffset, clearingResult } = await sealAndQueue(program, relayer, staging, kind, count);
+    const { tailIx, txCount } = await stageBatch(program, relayer, staging, kind, slots, { fresh: firstBatch });
+    firstBatch = false;
+    const { computationOffset, clearingResult } = await sealAndQueue(program, relayer, staging, kind, count, tailIx);
     await awaitClearing(provider, program, computationOffset);
     const r = await program.account.clearingResult.fetch(clearingResult);
-    console.log(`      [clear] kind=${kind} count=${count} verified=${r.verified} bits=${JSON.stringify(bitmapBits(r.bitmap as number[], count))} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    console.log(`      [clear] kind=${kind} count=${count} verified=${r.verified} bits=${JSON.stringify(bitmapBits(r.bitmap as number[], count))} staging tx=${txCount + 1}${tailIx ? " (tail merged into seal)" : ""} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     if (!r.verified) {
       throw new Error(r.failed
         ? "computation FAILED (BatchClearingFailed) — check artifacts/arx_node_logs (circuit fetch?)"
         : "callback did not land — check artifacts/arx_node_logs");
     }
-    return { staging, bits: bitmapBits(r.bitmap as number[], count) };
+    return { bits: bitmapBits(r.bitmap as number[], count) };
   }
 
   before(async () => {
@@ -213,6 +216,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await lock(chanAG[1], 30 * ONE);
     await lock(chanAG[2], 100 * ONE);
     await assertSolvent();
+    staging = await openStaging(program, relayer, KIND_UNILATERAL);
   });
 
   it("clears a unilateral batch: valid, corrupt, partial and settles the valid ones", async () => {
@@ -222,7 +226,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       uniRecord(chanAG[2], 10 * ONE, true), // corrupt signature -> bit 0
       uniRecord(chanAG[2], 25 * ONE), // moves 25 of 100
     ];
-    const { staging, bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
+    const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
     expect(bits).to.deep.equal([true, true, false, true]);
 
     const chanOf = (i: number) =>
@@ -254,8 +258,10 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       uniRecord(chanAG[1], 50 * ONE), // same commitment as before -> moves the remaining 20
       uniRecord(chanAG[0], 40 * ONE), // already fully settled -> moves 0, still "applied"
     ];
-    const { staging, bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
+    const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
     expect(bits).to.deep.equal([true, true]);
+    // The buffer cannot be reset for a new batch while verified commitments are still unapplied.
+    await expectReject(stageBatch(program, relayer, staging, KIND_UNILATERAL, buildUnilateralBatch(records)), /StagingBusy/);
     const gBefore = await avail(gateway);
     await settle(program, staging, [0, 1], (i) => [i === 0 ? chanAG[1].key : chanAG[0].key, gateway.balance]);
     expect(await chan(chanAG[1])).to.deep.equal({ settled: 50 * ONE, locked: 0 });
@@ -265,13 +271,6 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     // only in the sense that it moves nothing; here the guard is per-batch `applied`.
     await expectReject(settle(program, staging, [1], () => [chanAG[0].key, gateway.balance]), /RecordAlreadyApplied/);
     await assertSolvent();
-    // Rent comes back once every verified record is applied.
-    const before = await provider.connection.getBalance(relayer.publicKey);
-    await program.methods.closeStaging()
-      .accounts({ relayer: relayer.publicKey, staging, clearingResult: clearingPda(program.programId, staging) })
-      .signers([relayer]).rpc({ commitment: "confirmed" });
-    expect(await provider.connection.getBalance(relayer.publicKey)).to.be.greaterThan(before);
-    expect(await provider.connection.getAccountInfo(staging)).to.be.null;
   });
 
   it("clears a route batch and settles agent -> gateway -> provider atomically, with no gateway prefunding", async () => {
@@ -292,7 +291,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       .accounts({ payerOwner: agents[0].owner.publicKey, payerParticipant: agents[0].participant, config: configPda, channel: chanAG[0].key, payerBalance: agents[0].balance })
       .signers([agents[0].owner]).rpc();
 
-    const { staging, bits } = await clear(KIND_ROUTE, buildRouteBatch(records), records.length);
+    const { bits } = await clear(KIND_ROUTE, buildRouteBatch(records), records.length);
     expect(bits).to.deep.equal([true, false, true]);
 
     // Legs that do not chain (wrong provider balance for the gateway->provider channel) are refused.
@@ -333,5 +332,13 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     expect(await avail(ch.payer)).to.equal(before + 5 * ONE);
     expect(await chan(ch)).to.deep.equal({ settled: 55 * ONE, locked: 0 });
     await assertSolvent();
+  });
+
+  it("reclaims the buffer's rent once its last batch is fully applied", async () => {
+    // Route index 1 was rejected by the circuit (never applied, never has to be); 0 and 2 applied.
+    const before = await provider.connection.getBalance(relayer.publicKey);
+    await closeStaging(program, relayer, staging);
+    expect(await provider.connection.getBalance(relayer.publicKey)).to.be.greaterThan(before);
+    expect(await provider.connection.getAccountInfo(staging)).to.be.null;
   });
 });

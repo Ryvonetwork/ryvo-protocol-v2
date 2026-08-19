@@ -17,8 +17,12 @@ use arcis::*;
 mod circuits {
     use arcis::*;
 
-    /// Records per batch. Fixed at compile time; shorter batches are padded by the relayer.
-    pub const N: usize = 32;
+    /// Commitments per batch. Fixed at compile time; shorter batches are padded by the relayer.
+    /// Route batches are half the size: each route needs two key account arguments, and the
+    /// Arcium program's own 32 KB heap tops out somewhere between 66 and 131 account arguments
+    /// per computation.
+    pub const N_UNI: usize = 64;
+    pub const N_ROUTE: usize = 32;
 
     /// `b"ryvo-commitment-v1"`
     const TAG: [u8; 18] = [
@@ -48,13 +52,13 @@ mod circuits {
     #[instruction]
     pub fn clear_unilateral(
         domain: u128,
-        ids: [u128; N],
-        vks: [Pack<VerifyingKey>; N],
-        sigs: [Pack<Sig>; N],
-    ) -> [bool; N] {
+        ids: [u128; N_UNI],
+        vks: [Pack<VerifyingKey>; N_UNI],
+        sigs: [Pack<Sig>; N_UNI],
+    ) -> [bool; N_UNI] {
         let d = u128_to_le_bytes(domain);
-        let mut out = [false; N];
-        for i in 0..N {
+        let mut out = [false; N_UNI];
+        for i in 0..N_UNI {
             let body = u128_to_le_bytes(ids[i]);
             let mut pre = [0u8; 52];
             for j in 0..18 {
@@ -80,16 +84,16 @@ mod circuits {
     #[instruction]
     pub fn clear_route(
         domain: u128,
-        ids: [u128; N],
-        targets: [u128; N],
-        vk_agent: [Pack<VerifyingKey>; N],
-        vk_gateway: [Pack<VerifyingKey>; N],
-        sig_agent: [Pack<Sig>; N],
-        sig_gateway: [Pack<Sig>; N],
-    ) -> [bool; N] {
+        ids: [u128; N_ROUTE],
+        targets: [u128; N_ROUTE],
+        vk_agent: [Pack<VerifyingKey>; N_ROUTE],
+        vk_gateway: [Pack<VerifyingKey>; N_ROUTE],
+        sig_agent: [Pack<Sig>; N_ROUTE],
+        sig_gateway: [Pack<Sig>; N_ROUTE],
+    ) -> [bool; N_ROUTE] {
         let d = u128_to_le_bytes(domain);
-        let mut out = [false; N];
-        for i in 0..N {
+        let mut out = [false; N_ROUTE];
+        for i in 0..N_ROUTE {
             let idb = u128_to_le_bytes(ids[i]);
             let tgb = u128_to_le_bytes(targets[i]);
             let mut pre = [0u8; 68];

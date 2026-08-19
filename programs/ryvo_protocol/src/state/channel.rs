@@ -48,6 +48,17 @@ pub struct Channel {
     pub pending_unlock_at: i64,
     /// Assigned from `Config.next_channel_id` at creation. Never 0, never reused.
     pub channel_id: u64,
+    /// `authorized_signer` in the two-slot packed form the Arcis circuit unpacks
+    /// (`Pack<VerifyingKey>`: 26 bytes + 6 bytes, little-endian, one 32-byte slot each). The MPC
+    /// reads the key from THIS account by address, so the relayer never stages keys and cannot
+    /// substitute one. Byte offset `Channel::SIGNER_SLOTS_OFFSET`.
+    pub signer_slots: [[u8; 32]; 2],
     pub bump: u8,
     pub _reserved: [u8; 88],
+}
+
+impl Channel {
+    /// 8 (discriminator) + 4 × 32 (pubkeys) + 5 × 8 (u64/i64) = 176.
+    pub const SIGNER_SLOTS_OFFSET: usize = 8 + 4 * 32 + 5 * 8;
+    pub const SIGNER_SLOTS_LEN: usize = 64;
 }

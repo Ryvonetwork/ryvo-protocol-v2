@@ -13,6 +13,7 @@ pub use token_config::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anchor_lang::prelude::Pubkey;
     use anchor_lang::Space;
 
     /// Pins every account size. A field added without deliberately updating this test is a
@@ -28,7 +29,7 @@ mod tests {
         assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 1 + 96);
         assert_eq!(
             Channel::INIT_SPACE,
-            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 1 + 88
+            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 64 + 1 + 88
         );
     }
 
@@ -49,6 +50,34 @@ mod tests {
                 "{name} reserves {reserved} bytes, below the {MIN_RESERVED}-byte floor"
             );
         }
+    }
+
+    /// The circuit reads `signer_slots` straight out of the account bytes by offset, so the
+    /// offset is part of the wire contract with the staging client and the Arcium argument list.
+    #[test]
+    fn channel_signer_slots_offset_is_pinned() {
+        use anchor_lang::AccountSerialize;
+        let mut c = Channel {
+            payer: Pubkey::new_unique(),
+            payee: Pubkey::new_unique(),
+            mint: Pubkey::new_unique(),
+            authorized_signer: Pubkey::new_unique(),
+            settled_cumulative: 1,
+            locked_balance: 2,
+            pending_unlock_amount: 3,
+            pending_unlock_at: 4,
+            channel_id: 5,
+            signer_slots: [[0xAA; 32], [0xBB; 32]],
+            bump: 6,
+            _reserved: [0u8; 88],
+        };
+        c.signer_slots[0][31] = 0x11;
+        let mut bytes = Vec::new();
+        c.try_serialize(&mut bytes).unwrap();
+        let off = Channel::SIGNER_SLOTS_OFFSET;
+        assert_eq!(&bytes[off..off + 32], &c.signer_slots[0]);
+        assert_eq!(&bytes[off + 32..off + 64], &c.signer_slots[1]);
+        assert_eq!(bytes[off + 64], 6, "bump follows signer_slots");
     }
 
     /// `Balance` holds nothing but free money and its identity. No pending-withdrawal state,
