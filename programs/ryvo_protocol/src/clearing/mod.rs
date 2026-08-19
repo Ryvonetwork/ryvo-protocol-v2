@@ -228,6 +228,9 @@ impl ClearingResult {
         self.failed = false;
         self.bitmap = [0u8; 8];
         self.applied = [0u8; 8];
+        // No computation is bound until the next seal, so a late callback for an abandoned one
+        // is refused rather than recorded against an unsealed buffer.
+        self.computation_offset = 0;
     }
     /// Every verified commitment applied, or the computation failed.
     pub fn is_done(&self) -> bool {
