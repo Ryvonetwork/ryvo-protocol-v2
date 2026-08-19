@@ -175,8 +175,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     const t0 = Date.now();
     // The unilateral comp def is registered on demand (this smoke exercises routes only, and a
     // deactivated-but-not-yet-closable comp def at that offset would make init fail).
-    if (process.env.RYVO_INIT_UNILATERAL) await ensureCompDef(program, provider, payer, "clear_unilateral", `${CIRCUIT_BASE_URL}/clear_unilateral.arcis`);
-    await ensureCompDef(program, provider, payer, "clear_route", `${CIRCUIT_BASE_URL}/clear_route.arcis`);
+    await ensureCompDef(program, provider, payer, "clear_unilateral64", `${CIRCUIT_BASE_URL}/clear_unilateral64.arcis`);
+    await ensureCompDef(program, provider, payer, "clear_route64", `${CIRCUIT_BASE_URL}/clear_route64.arcis`);
     console.log(`    comp defs ready (${((Date.now() - t0) / 1000).toFixed(1)}s) — circuits at ${CIRCUIT_BASE_URL}`);
   });
 
@@ -282,22 +282,23 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     const t0 = Date.now();
     const v1 = await supportsTxV1(program, payer);
     console.log(`    staging in ${v1 ? "v1 (4,096 B)" : "legacy (1,232 B)"} transactions; N=${N_ROUTE} commitments per batch`);
-    if (!v1) console.log(`    (transaction v1 not active on this cluster; with it a full route batch would stage in ${stagingTxCount(KIND_ROUTE).v1} tx instead of ${stagingTxCount(KIND_ROUTE).legacy})`);
+    const txc = await stagingTxCount(program, payer, KIND_ROUTE);
+    if (!v1) console.log(`    (transaction v1 not active on this cluster; with it a full route batch would stage in ${txc.v1} tx instead of ${txc.legacy})`);
     staging = await openStaging(program, payer, KIND_ROUTE);
     stats.tx.stage += 1; // create + open (once per buffer, not per batch)
     for (let first = 0, k = 0; first < records.length; first += N_ROUTE, k++) {
       const batch = records.slice(first, first + N_ROUTE);
       const t1 = Date.now();
-      const { tailIx, txCount } = await stageBatch(program, payer, staging, KIND_ROUTE, buildRouteBatch(batch), { fresh: k === 0, reclaim: lastComputation });
+      const { sealPre, txCount, tailRecords } = await stageBatch(program, payer, staging, buildRouteBatch(batch), { fresh: k === 0, reclaim: lastComputation });
       stats.tx.stage += txCount;
-      const { computationOffset, clearingResult } = await sealAndQueue(program, payer, staging, KIND_ROUTE, batch.length, tailIx);
+      const { computationOffset, clearingResult } = await sealAndQueue(program, payer, staging, KIND_ROUTE, batch.length, sealPre);
       lastComputation = computationOffset;
       stats.tx.queue++;
       await awaitClearing(provider, program, computationOffset);
       const r = await program.account.clearingResult.fetch(clearingResult);
       const bits = bitmapBits(r.bitmap as number[], batch.length);
       stats.tx.callback++;
-      console.log(`    batch ${k}: ${batch.length} routes staged in ${txCount + 1} tx${tailIx ? " (tail merged into seal)" : ""}, verified=${r.verified} ${bits.filter(Boolean).length}/${batch.length} valid (${((Date.now() - t1) / 1000).toFixed(0)}s)`);
+      console.log(`    batch ${k}: ${batch.length} routes staged in ${txCount + 1} tx${tailRecords ? ` (${tailRecords} records ride in the seal tx)` : ""}, verified=${r.verified} ${bits.filter(Boolean).length}/${batch.length} valid (${((Date.now() - t1) / 1000).toFixed(0)}s)`);
       expect(r.verified).to.be.true;
       expect(bits.every(Boolean)).to.be.true;
       batches.push({ first, count: batch.length, bits });
@@ -308,7 +309,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     stats.t.clear = Date.now() - t0;
   });
 
-  /** One v0 tx per 32 routes through the lookup table (98 accounts / 126 locks). */
+  /** One v0 tx per SETTLE_PER_TX routes through the lookup table (a full N=64 batch fits one tx). */
+  const SETTLE_PER_TX = Number(process.env.RYVO_SETTLE_PER_TX ?? 64);
   let table: Awaited<ReturnType<typeof connection.getAddressLookupTable>>["value"] | null = null;
   async function ensureLookupTable() {
     if (table) return table;
@@ -327,8 +329,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   }
   async function settleBatch(b: { first: number; count: number }) {
     const t = await ensureLookupTable();
-    for (let start = 0; start < b.count; start += 32) {
-      const indices = Array.from({ length: Math.min(32, b.count - start) }, (_, i) => start + i);
+    for (let start = 0; start < b.count; start += SETTLE_PER_TX) {
+      const indices = Array.from({ length: Math.min(SETTLE_PER_TX, b.count - start) }, (_, i) => start + i);
       const remaining = indices.flatMap((i) => {
         const r = routeOf[b.first + i];
         return [chanAG[r.ag].key, chanGP[r.gp].key, providers[r.gp].balance].map((pubkey) => ({ pubkey, isWritable: true, isSigner: false }));

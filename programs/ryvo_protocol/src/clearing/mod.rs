@@ -19,35 +19,47 @@
 //!    slots, is handed the channel and balance accounts for the commitments it is asked to
 //!    settle, and moves funds.
 //!
-//! # Where the signing keys come from
+//! # Staging: dense records in, slots out
 //!
-//! The relayer does not stage keys, and cannot: `stage_slots` only reaches the data columns. It
-//! names the `Channel` accounts in `stage_channels`, and the program copies each channel's
-//! address *and* its `signer_slots` into the buffer in one write. The key the circuit verifies
-//! against is therefore by construction the one registered on the channel that will be debited;
-//! `settle_channels` only has to check that the account it is handed *is* the staged address
-//! (and carries the staged `channel_id`).
+//! The relayer sends each commitment as a dense record — `stage_records(start, bytes)` with the
+//! `Channel` account(s) of each record as remaining accounts — and the *program* lays it out in
+//! the buffer: ids/targets as plaintext u128 slots, signatures packed 26 bytes per slot, and
+//! each channel's address *and* registered `signer_slots` copied straight from the `Channel`
+//! account. The relayer never writes a slot directly, so it cannot substitute a key: the key the
+//! circuit verifies against is by construction the one registered on the channel that will be
+//! debited, and `settle_channels` only has to check that the account it is handed *is* the
+//! staged address (and carries the staged `channel_id`).
 //!
-//! The circuit reads everything from the buffer through three account arguments (ids, keys,
-//! signatures). One account per computation, however many channels the batch touches: the
-//! Arcium program rejects a queue whose account arguments name more than about 14 distinct
-//! accounts (`InvalidCallbackAccsLen`, measured on devnet), and its own heap runs out well before
-//! 128 arguments, so per-channel account arguments do not scale.
+//! Dense records are what keeps staging cheap: a route is 160 bytes of data + 2 channel
+//! accounts on the wire (4 per legacy transaction, 16 per 4,096-byte v1 transaction) against
+//! 448 bytes once laid out in slots. A short batch stages only `count` records;
+//! `seal_and_queue_*` pads the rest of the circuit's fixed-size input by repeating record 0.
+//!
+//! ```text
+//! unilateral record (80 B):  channel_id u64 | target u64 | sig[64]                     + accounts: channel
+//! route record (160 B):      ag_id u64 | gp_id u64 | target_ag u64 | target_gp u64
+//!                            | sig_agent[64] | sig_gateway[64]                        + accounts: channel_ag, channel_gp
+//! ```
+//!
+//! The circuit reads everything from the buffer through a few account arguments (one per
+//! column). One account per computation, however many channels the batch touches: the Arcium
+//! program rejects a queue whose account arguments name more than about 14 distinct accounts
+//! (`InvalidCallbackAccsLen`, measured on devnet), so per-channel account arguments do not scale.
 //!
 //! # Slot layout
 //!
 //! A `StagingBuffer` is `MAX_SLOTS` × 32-byte slots. Plaintext u128 = 16 LE bytes in the low
 //! half; packed key = 2 slots, packed signature = 3 slots (26 bytes per slot, LE); a channel
-//! address = one slot. Data columns first (relayer-written), then the program-written columns.
+//! address = one slot. All columns are program-written.
 //!
 //! ```text
-//! unilateral (N commitments, 7N slots):  ids[N] | sig[3N]                 ‖ key[2N] | channel[N]
+//! unilateral (N commitments, 7N slots):  ids[N] | sig[3N] | key[2N] | channel[N]
 //! route      (N commitments, 14N slots): ids[N] | targets[N] | sig_agent[3N] | sig_gateway[3N]
-//!                                        ‖ key_agent[2N] | key_gateway[2N] | channel_ag[N] | channel_gp[N]
+//!                                        | key_agent[2N] | key_gateway[2N] | channel_ag[N] | channel_gp[N]
 //! ```
 //!
 //! The circuit's parameter order is `domain, ids, (targets,) keys…, sigs…`; the argument list is
-//! assembled from buffer ranges to match it exactly.
+//! assembled from buffer column ranges to match it exactly.
 //!
 //! # Buffer reuse
 //!
@@ -55,7 +67,7 @@
 //! settled (or failed) batch in place, so a steady-state batch costs no account creation, no
 //! close, and no rent churn.
 
-use crate::commitment::{unpack_pair, PUBKEY_SLOTS as KEY_SLOTS, KIND_ROUTE, KIND_UNILATERAL, SIG_SLOTS, SLOT};
+use crate::commitment::{pack_pair, pack_signature, unpack_pair, PUBKEY_SLOTS as KEY_SLOTS, KIND_ROUTE, KIND_UNILATERAL, SIG_SLOTS, SLOT};
 use crate::constants::{CLEARING_SEED, CONFIG_SEED};
 use crate::error::RyvoError;
 use crate::events::{BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled, RouteSettled};
@@ -66,26 +78,25 @@ use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
 /// Commitments per batch. Must equal `N_UNI` / `N_ROUTE` in `encrypted-ixs`. The circuit shape
-/// is fixed at compile time, so a shorter batch is padded by the relayer (repeat a valid
-/// commitment) and `count` tells `settle_channels` where the real ones end. 64 is the most an
-/// 8-byte bitmap holds; route batches are 32 for now (circuit size).
+/// is fixed at compile time, so a shorter batch is padded at seal time (record 0 repeated) and
+/// `count` tells `settle_channels` where the real ones end. 64 is the most an 8-byte bitmap holds.
 pub const N_UNI: usize = 64;
-pub const N_ROUTE: usize = 32;
+pub const N_ROUTE: usize = 64;
 
-/// Slots the relayer stages per commitment (`stage_slots` may only write these).
-pub const UNILATERAL_DATA_SLOTS_PER_RECORD: usize = 1 + SIG_SLOTS; // id, sig = 4
-pub const ROUTE_DATA_SLOTS_PER_RECORD: usize = 2 + 2 * SIG_SLOTS; // ids, targets, 2 sigs = 8
-/// Slots per commitment including the program-written key and channel columns.
-pub const UNILATERAL_SLOTS_PER_RECORD: usize = UNILATERAL_DATA_SLOTS_PER_RECORD + KEY_SLOTS + 1; // 7
-pub const ROUTE_SLOTS_PER_RECORD: usize = ROUTE_DATA_SLOTS_PER_RECORD + 2 * KEY_SLOTS + 2; // 14
+/// Dense record sizes on the wire (`stage_records`).
+pub const UNILATERAL_RECORD_LEN: usize = 8 + 8 + 64; // channel_id, target, sig
+pub const ROUTE_RECORD_LEN: usize = 4 * 8 + 2 * 64; // ag_id, gp_id, target_ag, target_gp, 2 sigs
+/// Slots per commitment once laid out.
+pub const UNILATERAL_SLOTS_PER_RECORD: usize = 1 + SIG_SLOTS + KEY_SLOTS + 1; // 7
+pub const ROUTE_SLOTS_PER_RECORD: usize = 2 + 2 * SIG_SLOTS + 2 * KEY_SLOTS + 2; // 14
 pub const UNILATERAL_SLOTS: usize = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 448
-pub const ROUTE_SLOTS: usize = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 448
+pub const ROUTE_SLOTS: usize = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 896
 pub const MAX_SLOTS: usize = if UNILATERAL_SLOTS > ROUTE_SLOTS { UNILATERAL_SLOTS } else { ROUTE_SLOTS };
 
 /// Byte offset of `slots` inside the account: 8-byte discriminator + header.
 pub const SLOTS_OFFSET: usize = 8 + StagingBuffer::HEADER_LEN;
 
-// Column offsets (in slots) within a batch. Data columns first, then key and channel columns.
+// Column offsets (in slots) within a batch.
 pub const UNI_COL_IDS: usize = 0;
 pub const UNI_COL_SIG: usize = N_UNI;
 pub const UNI_COL_KEY: usize = 4 * N_UNI;
@@ -98,15 +109,13 @@ pub const RT_COL_KEY_A: usize = 8 * N_ROUTE;
 pub const RT_COL_KEY_G: usize = 10 * N_ROUTE;
 pub const RT_COL_CHANNEL_A: usize = 12 * N_ROUTE;
 pub const RT_COL_CHANNEL_G: usize = 13 * N_ROUTE;
-/// Channel accounts `stage_channels` accepts per call (a legacy transaction holds ~31 accounts).
-pub const MAX_CHANNELS_PER_STAGE: usize = 30;
 
 pub const fn batch_size(kind: u8) -> usize {
     if kind == KIND_ROUTE { N_ROUTE } else { N_UNI }
 }
 
-const COMP_DEF_OFFSET_CLEAR_UNILATERAL: u32 = comp_def_offset("clear_unilateral");
-const COMP_DEF_OFFSET_CLEAR_ROUTE: u32 = comp_def_offset("clear_route");
+const COMP_DEF_OFFSET_CLEAR_UNILATERAL: u32 = comp_def_offset("clear_unilateral64");
+const COMP_DEF_OFFSET_CLEAR_ROUTE: u32 = comp_def_offset("clear_route64");
 
 // ============================================================================================
 // State
@@ -148,12 +157,32 @@ impl StagingBuffer {
         }
     }
 
-    /// Slots the relayer may write with `stage_slots`: the data columns of the batch.
-    pub fn data_slots(kind: u8) -> Result<usize> {
+    /// Dense record length and channel accounts per record for `stage_records`.
+    pub fn record_shape(kind: u8) -> Result<(usize, usize)> {
         match kind {
-            KIND_UNILATERAL => Ok(N_UNI * UNILATERAL_DATA_SLOTS_PER_RECORD),
-            KIND_ROUTE => Ok(N_ROUTE * ROUTE_DATA_SLOTS_PER_RECORD),
+            KIND_UNILATERAL => Ok((UNILATERAL_RECORD_LEN, 1)),
+            KIND_ROUTE => Ok((ROUTE_RECORD_LEN, 2)),
             _ => Err(RyvoError::InvalidStagingKind.into()),
+        }
+    }
+
+    /// Every column of record `i` as (column offset, slots) pairs, for copying a whole record.
+    fn record_columns(kind: u8) -> &'static [(usize, usize)] {
+        match kind {
+            KIND_UNILATERAL => &[(UNI_COL_IDS, 1), (UNI_COL_SIG, SIG_SLOTS), (UNI_COL_KEY, KEY_SLOTS), (UNI_COL_CHANNEL, 1)],
+            _ => &[
+                (RT_COL_IDS, 1), (RT_COL_TARGETS, 1), (RT_COL_SIG_A, SIG_SLOTS), (RT_COL_SIG_G, SIG_SLOTS),
+                (RT_COL_KEY_A, KEY_SLOTS), (RT_COL_KEY_G, KEY_SLOTS), (RT_COL_CHANNEL_A, 1), (RT_COL_CHANNEL_G, 1),
+            ],
+        }
+    }
+
+    /// Copy record `from` over record `to` in every column (padding a short batch).
+    fn copy_record(&mut self, kind: u8, from: usize, to: usize) {
+        for &(col, width) in Self::record_columns(kind) {
+            for k in 0..width {
+                self.slots[col + width * to + k] = self.slots[col + width * from + k];
+            }
         }
     }
 }
@@ -236,7 +265,7 @@ pub fn init_arcium_signer_handler(ctx: Context<InitArciumSigner>) -> Result<()> 
     Ok(())
 }
 
-#[init_computation_definition_accounts("clear_unilateral", payer)]
+#[init_computation_definition_accounts("clear_unilateral64", payer)]
 #[derive(Accounts)]
 pub struct InitClearUnilateralCompDef<'info> {
     #[account(mut)]
@@ -256,7 +285,7 @@ pub struct InitClearUnilateralCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[init_computation_definition_accounts("clear_route", payer)]
+#[init_computation_definition_accounts("clear_route64", payer)]
 #[derive(Accounts)]
 pub struct InitClearRouteCompDef<'info> {
     #[account(mut)]
@@ -349,65 +378,79 @@ pub fn reset_staging_handler(ctx: Context<ResetStaging>, kind: u8) -> Result<()>
 }
 
 #[derive(Accounts)]
-pub struct StageSlots<'info> {
+pub struct StageRecords<'info> {
     pub relayer: Signer<'info>,
     #[account(mut, has_one = relayer)]
     pub staging: AccountLoader<'info, StagingBuffer>,
+    // remaining_accounts: the `Channel` account(s) of each record, in record order
+    // (unilateral: channel; route: channel_ag, channel_gp).
 }
 
-/// Write raw slot bytes at a slot offset inside the data columns. The relayer lays the columns
-/// out client-side; the program only checks bounds and that the buffer is still open. The key
-/// and channel columns are out of reach: only `stage_channels` writes them.
-pub fn stage_slots_handler(ctx: Context<StageSlots>, slot_offset: u16, data: Vec<u8>) -> Result<()> {
-    require!(data.len() % SLOT == 0, RyvoError::InvalidStagingData);
+fn u64_at(b: &[u8], o: usize) -> u64 {
+    u64::from_le_bytes(b[o..o + 8].try_into().unwrap())
+}
+
+/// Stage dense records for indices `start..start + n`. The program lays them out in slots and
+/// copies each channel's address and registered signing key from the `Channel` account itself,
+/// so the key staged for an index is always the one registered on the channel staged at that
+/// index. Bounds-checked against the batch size; the buffer must be open.
+pub fn stage_records_handler<'info>(
+    ctx: Context<'info, StageRecords<'info>>,
+    start: u16,
+    data: Vec<u8>,
+) -> Result<()> {
     let mut s = ctx.accounts.staging.load_mut()?;
     require!(s.sealed == 0, RyvoError::StagingSealed);
-    let first = slot_offset as usize;
-    let n = data.len() / SLOT;
-    let writable = StagingBuffer::data_slots(s.kind)?;
-    require!(first + n <= writable, RyvoError::InvalidStagingData);
-    for (i, chunk) in data.chunks(SLOT).enumerate() {
-        s.slots[first + i].copy_from_slice(chunk);
+    let kind = s.kind;
+    let (record_len, channels_per) = StagingBuffer::record_shape(kind)?;
+    let accs = ctx.remaining_accounts;
+    require!(!data.is_empty() && data.len() % record_len == 0, RyvoError::InvalidStagingData);
+    let n = data.len() / record_len;
+    require!(accs.len() == n * channels_per, RyvoError::InvalidStagingData);
+    let start = start as usize;
+    require!(start + n <= batch_size(kind), RyvoError::InvalidStagingData);
+
+    for r in 0..n {
+        let i = start + r;
+        let rec = &data[r * record_len..(r + 1) * record_len];
+        let chans = &accs[r * channels_per..(r + 1) * channels_per];
+        match kind {
+            KIND_UNILATERAL => {
+                s.slots[UNI_COL_IDS + i] = u128_slot(pack_pair(u64_at(rec, 0), u64_at(rec, 8)));
+                write_sig(&mut s.slots, UNI_COL_SIG + SIG_SLOTS * i, &rec[16..80]);
+                write_channel(&mut s.slots, UNI_COL_KEY + KEY_SLOTS * i, UNI_COL_CHANNEL + i, &chans[0])?;
+            }
+            KIND_ROUTE => {
+                s.slots[RT_COL_IDS + i] = u128_slot(pack_pair(u64_at(rec, 0), u64_at(rec, 8)));
+                s.slots[RT_COL_TARGETS + i] = u128_slot(pack_pair(u64_at(rec, 16), u64_at(rec, 24)));
+                write_sig(&mut s.slots, RT_COL_SIG_A + SIG_SLOTS * i, &rec[32..96]);
+                write_sig(&mut s.slots, RT_COL_SIG_G + SIG_SLOTS * i, &rec[96..160]);
+                write_channel(&mut s.slots, RT_COL_KEY_A + KEY_SLOTS * i, RT_COL_CHANNEL_A + i, &chans[0])?;
+                write_channel(&mut s.slots, RT_COL_KEY_G + KEY_SLOTS * i, RT_COL_CHANNEL_G + i, &chans[1])?;
+            }
+            _ => unreachable!(),
+        }
     }
     Ok(())
 }
 
-#[derive(Accounts)]
-pub struct StageChannels<'info> {
-    pub relayer: Signer<'info>,
-    #[account(mut, has_one = relayer)]
-    pub staging: AccountLoader<'info, StagingBuffer>,
-    // remaining_accounts: the `Channel` accounts for indices `start..start + n` of column `col`.
+fn u128_slot(v: u128) -> [u8; SLOT] {
+    let mut out = [0u8; SLOT];
+    out[..16].copy_from_slice(&v.to_le_bytes());
+    out
 }
 
-/// Copy each named channel's address and registered signing key into the buffer, indices
-/// `start..start + n` of column `col` (0 = payer / agent channel, 1 = gateway→provider channel;
-/// unilateral batches only have column 0). Reads the `Channel` accounts themselves, so the key
-/// staged for an index is always the one registered on the channel staged at that index.
-pub fn stage_channels_handler<'info>(
-    ctx: Context<'info, StageChannels<'info>>,
-    col: u8,
-    start: u16,
-) -> Result<()> {
-    let channels = ctx.remaining_accounts;
-    require!(!channels.is_empty() && channels.len() <= MAX_CHANNELS_PER_STAGE, RyvoError::InvalidStagingData);
-    let mut s = ctx.accounts.staging.load_mut()?;
-    require!(s.sealed == 0, RyvoError::StagingSealed);
-    let (channel_col, key_col) = match (s.kind, col) {
-        (KIND_UNILATERAL, 0) => (UNI_COL_CHANNEL, UNI_COL_KEY),
-        (KIND_ROUTE, 0) => (RT_COL_CHANNEL_A, RT_COL_KEY_A),
-        (KIND_ROUTE, 1) => (RT_COL_CHANNEL_G, RT_COL_KEY_G),
-        _ => return Err(RyvoError::InvalidStagingData.into()),
-    };
-    let start = start as usize;
-    require!(start + channels.len() <= batch_size(s.kind), RyvoError::InvalidStagingData);
-    for (i, info) in channels.iter().enumerate() {
-        let channel: Account<Channel> = Account::try_from(info)?; // owner + discriminator checked
-        let idx = start + i;
-        s.slots[channel_col + idx] = info.key().to_bytes();
-        s.slots[key_col + KEY_SLOTS * idx] = channel.signer_slots[0];
-        s.slots[key_col + KEY_SLOTS * idx + 1] = channel.signer_slots[1];
-    }
+fn write_sig(slots: &mut [[u8; SLOT]; MAX_SLOTS], at: usize, sig: &[u8]) {
+    let packed = pack_signature(sig.try_into().unwrap());
+    slots[at..at + SIG_SLOTS].copy_from_slice(&packed);
+}
+
+/// Address + registered key of a `Channel` (owner and discriminator checked by `Account`).
+fn write_channel<'info>(slots: &mut [[u8; SLOT]; MAX_SLOTS], key_at: usize, channel_at: usize, info: &'info AccountInfo<'info>) -> Result<()> {
+    let channel: Account<Channel> = Account::try_from(info)?;
+    slots[channel_at] = info.key().to_bytes();
+    slots[key_at] = channel.signer_slots[0];
+    slots[key_at + 1] = channel.signer_slots[1];
     Ok(())
 }
 
@@ -415,7 +458,7 @@ pub fn stage_channels_handler<'info>(
 // Seal + queue
 // ============================================================================================
 
-#[queue_computation_accounts("clear_unilateral", relayer)]
+#[queue_computation_accounts("clear_unilateral64", relayer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct SealAndQueueUnilateral<'info> {
@@ -459,7 +502,7 @@ pub struct SealAndQueueUnilateral<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[queue_computation_accounts("clear_route", relayer)]
+#[queue_computation_accounts("clear_route64", relayer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct SealAndQueueRoute<'info> {
@@ -528,25 +571,30 @@ fn seal_common(
     s.count = count;
     s.sealed = 1;
     clearing_result.clear(kind, count);
+    // The circuit's input is fixed-size: pad a short batch by repeating record 0, which is a
+    // complete, verifiable record. Padded indices are >= count and never settled.
+    for i in count as usize..batch_size(kind) {
+        s.copy_record(kind, 0, i);
+    }
 
     // Built by hand rather than through ArgBuilder so the vectors are sized once (the on-chain
-    // bump allocator never frees). Three account ranges in the circuit's parameter order:
-    // ids (and targets), keys, signatures — adjacent columns share one range.
+    // bump allocator never frees). One account range per column, in the circuit's parameter
+    // order (each range stays within the 6 KB proven on devnet).
     let key = staging_loader.key();
-    let mut args: Vec<ArgumentRef> = Vec::with_capacity(4);
-    let mut accounts: Vec<AccountArgument> = Vec::with_capacity(3);
+    let mut args: Vec<ArgumentRef> = Vec::with_capacity(7);
+    let mut accounts: Vec<AccountArgument> = Vec::with_capacity(6);
     args.push(ArgumentRef::PlaintextU128(0)); // index into values_128_bit
     let values_128_bit = vec![crate::commitment::domain_slot(&config.message_domain)];
-    let ranges: [(usize, usize); 3] = match kind {
-        KIND_UNILATERAL => [(UNI_COL_IDS, N_UNI), (UNI_COL_KEY, KEY_SLOTS * N_UNI), (UNI_COL_SIG, SIG_SLOTS * N_UNI)],
-        KIND_ROUTE => [
-            (RT_COL_IDS, 2 * N_ROUTE),                // ids then targets
-            (RT_COL_KEY_A, 2 * KEY_SLOTS * N_ROUTE),  // agent then gateway keys
-            (RT_COL_SIG_A, 2 * SIG_SLOTS * N_ROUTE),  // agent then gateway sigs
+    let ranges: &[(usize, usize)] = match kind {
+        KIND_UNILATERAL => &[(UNI_COL_IDS, N_UNI), (UNI_COL_KEY, KEY_SLOTS * N_UNI), (UNI_COL_SIG, SIG_SLOTS * N_UNI)],
+        KIND_ROUTE => &[
+            (RT_COL_IDS, N_ROUTE), (RT_COL_TARGETS, N_ROUTE),
+            (RT_COL_KEY_A, KEY_SLOTS * N_ROUTE), (RT_COL_KEY_G, KEY_SLOTS * N_ROUTE),
+            (RT_COL_SIG_A, SIG_SLOTS * N_ROUTE), (RT_COL_SIG_G, SIG_SLOTS * N_ROUTE),
         ],
         _ => return Err(RyvoError::InvalidStagingKind.into()),
     };
-    for (col, slots) in ranges {
+    for &(col, slots) in ranges {
         args.push(ArgumentRef::Account(accounts.len() as u8));
         let (pubkey, offset, length) = range(key, col, slots);
         accounts.push(AccountArgument { pubkey, offset, length });
@@ -571,7 +619,7 @@ pub fn seal_and_queue_unilateral_handler(
         ctx.accounts,
         computation_offset,
         args,
-        vec![ClearUnilateralCallback::callback_ix(
+        vec![ClearUnilateral64Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &[CallbackAccount { pubkey: clearing_key, is_writable: true }],
@@ -607,7 +655,7 @@ pub fn seal_and_queue_route_handler(
         ctx.accounts,
         computation_offset,
         args,
-        vec![ClearRouteCallback::callback_ix(
+        vec![ClearRoute64Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &[CallbackAccount { pubkey: clearing_key, is_writable: true }],
@@ -630,9 +678,9 @@ pub fn seal_and_queue_route_handler(
 // Callbacks
 // ============================================================================================
 
-#[callback_accounts("clear_unilateral")]
+#[callback_accounts("clear_unilateral64")]
 #[derive(Accounts)]
-pub struct ClearUnilateralCallback<'info> {
+pub struct ClearUnilateral64Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CLEAR_UNILATERAL))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
@@ -654,9 +702,9 @@ pub struct ClearUnilateralCallback<'info> {
     pub clearing_result: Box<Account<'info, ClearingResult>>,
 }
 
-#[callback_accounts("clear_route")]
+#[callback_accounts("clear_route64")]
 #[derive(Accounts)]
-pub struct ClearRouteCallback<'info> {
+pub struct ClearRoute64Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CLEAR_ROUTE))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,

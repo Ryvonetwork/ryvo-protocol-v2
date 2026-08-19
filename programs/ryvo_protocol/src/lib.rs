@@ -198,7 +198,7 @@ pub mod ryvo_protocol {
         let source = circuit_url.map(|url| {
             CircuitSource::OffChain(OffChainCircuitSource {
                 source: url,
-                hash: circuit_hash!("clear_unilateral"),
+                hash: circuit_hash!("clear_unilateral64"),
             })
         });
         init_computation_def(ctx.accounts, source)?;
@@ -212,7 +212,7 @@ pub mod ryvo_protocol {
         let source = circuit_url.map(|url| {
             CircuitSource::OffChain(OffChainCircuitSource {
                 source: url,
-                hash: circuit_hash!("clear_route"),
+                hash: circuit_hash!("clear_route64"),
             })
         });
         init_computation_def(ctx.accounts, source)?;
@@ -231,16 +231,12 @@ pub mod ryvo_protocol {
         clearing::reset_staging_handler(ctx, kind)
     }
 
-    pub fn stage_slots(ctx: Context<StageSlots>, slot_offset: u16, data: Vec<u8>) -> Result<()> {
-        clearing::stage_slots_handler(ctx, slot_offset, data)
-    }
-
-    pub fn stage_channels<'info>(
-        ctx: Context<'info, StageChannels<'info>>,
-        col: u8,
+    pub fn stage_records<'info>(
+        ctx: Context<'info, StageRecords<'info>>,
         start: u16,
+        data: Vec<u8>,
     ) -> Result<()> {
-        clearing::stage_channels_handler(ctx, col, start)
+        clearing::stage_records_handler(ctx, start, data)
     }
 
     pub fn seal_and_queue_unilateral(
@@ -261,10 +257,10 @@ pub mod ryvo_protocol {
 
     // --- clearing: callbacks (invoked by Arcium) ---
 
-    #[arcium_callback(encrypted_ix = "clear_unilateral")]
-    pub fn clear_unilateral_callback(
-        ctx: Context<ClearUnilateralCallback>,
-        output: SignedComputationOutputs<ClearUnilateralOutput>,
+    #[arcium_callback(encrypted_ix = "clear_unilateral64")]
+    pub fn clear_unilateral64_callback(
+        ctx: Context<ClearUnilateral64Callback>,
+        output: SignedComputationOutputs<ClearUnilateral64Output>,
     ) -> Result<()> {
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
@@ -273,16 +269,16 @@ pub mod ryvo_protocol {
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
         ) {
-            Ok(ClearUnilateralOutput { field_0 }) => field_0,
+            Ok(ClearUnilateral64Output { field_0 }) => field_0,
             Err(_) => return Err(RyvoError::AbortedComputation.into()),
         };
         clearing::record_bitmap(&mut ctx.accounts.clearing_result, &bits, KIND_UNILATERAL)
     }
 
-    #[arcium_callback(encrypted_ix = "clear_route")]
-    pub fn clear_route_callback(
-        ctx: Context<ClearRouteCallback>,
-        output: SignedComputationOutputs<ClearRouteOutput>,
+    #[arcium_callback(encrypted_ix = "clear_route64")]
+    pub fn clear_route64_callback(
+        ctx: Context<ClearRoute64Callback>,
+        output: SignedComputationOutputs<ClearRoute64Output>,
     ) -> Result<()> {
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
@@ -291,7 +287,7 @@ pub mod ryvo_protocol {
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
         ) {
-            Ok(ClearRouteOutput { field_0 }) => field_0,
+            Ok(ClearRoute64Output { field_0 }) => field_0,
             Err(_) => return Err(RyvoError::AbortedComputation.into()),
         };
         clearing::record_bitmap(&mut ctx.accounts.clearing_result, &bits, KIND_ROUTE)

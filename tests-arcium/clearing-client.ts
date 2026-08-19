@@ -6,13 +6,14 @@
  *
  * A relayer owns one reusable staging buffer: `openStaging` once, then per batch
  * `stageBatch` (which resets the buffer in the first transaction) → `sealAndQueue` →
- * `awaitClearing` → `settle`. Keys are never staged by the relayer: `stage_channels` names the
- * `Channel` accounts and the program copies each one's address and `signer_slots` into the
- * buffer's key columns, which `stage_slots` cannot reach.
+ * `awaitClearing` → `settle`. The relayer sends dense records (`stage_records`: ids, targets,
+ * signatures as raw bytes + the Channel accounts); the program lays them out in slots and copies
+ * each channel's address and registered key from the account itself. A short batch stages only
+ * its real records; the program pads at seal time.
  */
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
-import { AccountMeta, ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { AccountMeta, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { randomBytes } from "crypto";
 import * as fs from "fs";
 import {
@@ -39,30 +40,25 @@ import {
   SIG_SLOTS,
   SLOT,
   UnilateralCommitment,
-  bodySlots,
-  packBytesToSlots,
-  u128Slot,
 } from "../tests/commitment-client";
 import { sendV1 } from "./txv1";
 
 /** Commitments per batch. Must equal `N_UNI` / `N_ROUTE` in the program and the circuit. */
 export const N_UNI = 64;
-export const N_ROUTE = 32;
-/** Slots the relayer stages per commitment (the data columns). */
-export const UNILATERAL_DATA_SLOTS_PER_RECORD = 1 + SIG_SLOTS; // id, sig
-export const ROUTE_DATA_SLOTS_PER_RECORD = 2 + 2 * SIG_SLOTS; // ids, targets, 2 sigs
-export const UNILATERAL_DATA_SLOTS = N_UNI * UNILATERAL_DATA_SLOTS_PER_RECORD; // 256
-export const ROUTE_DATA_SLOTS = N_ROUTE * ROUTE_DATA_SLOTS_PER_RECORD; // 256
-/** Slots per commitment including the program-written key (2 per channel) and channel columns. */
-export const UNILATERAL_SLOTS_PER_RECORD = UNILATERAL_DATA_SLOTS_PER_RECORD + 2 + 1; // 7
-export const ROUTE_SLOTS_PER_RECORD = ROUTE_DATA_SLOTS_PER_RECORD + 4 + 2; // 14
+export const N_ROUTE = 64;
+/** Dense record sizes on the wire (what `stage_records` takes). */
+export const UNILATERAL_RECORD_LEN = 8 + 8 + 64; // channel_id, target, sig
+export const ROUTE_RECORD_LEN = 4 * 8 + 2 * 64; // ag_id, gp_id, target_ag, target_gp, 2 sigs
+/** Slots per commitment once the program has laid it out (ids, sigs, keys, channel addresses). */
+export const UNILATERAL_SLOTS_PER_RECORD = 1 + SIG_SLOTS + 2 + 1; // 7
+export const ROUTE_SLOTS_PER_RECORD = 2 + 2 * SIG_SLOTS + 4 + 2; // 14
 export const UNILATERAL_SLOTS = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 448
-export const ROUTE_SLOTS = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 448
+export const ROUTE_SLOTS = N_ROUTE * ROUTE_SLOTS_PER_RECORD; // 896
 export const MAX_SLOTS = Math.max(UNILATERAL_SLOTS, ROUTE_SLOTS);
-/** Channel accounts per `stage_channels` call (program cap; ~31 accounts fit a legacy tx). */
-export const MAX_CHANNELS_PER_STAGE = 30;
 /** 8-byte discriminator + 48-byte header + MAX_SLOTS slots. Must equal `StagingBuffer::SPACE`. */
 export const STAGING_SPACE = 8 + 48 + MAX_SLOTS * SLOT;
+export const CIRCUITS = { [KIND_UNILATERAL]: "clear_unilateral64", [KIND_ROUTE]: "clear_route64" } as const;
+export type CircuitName = (typeof CIRCUITS)[keyof typeof CIRCUITS];
 
 export interface UnilateralRecord {
   commitment: UnilateralCommitment;
@@ -78,73 +74,67 @@ export interface RouteRecord {
   gatewaySignature: Uint8Array;
 }
 
-/** A batch ready to stage: the data columns as bytes, and the channel accounts per column. */
+/** A batch ready to stage: one dense record + its channel account(s) per commitment, no padding. */
 export interface Batch {
-  slots: Buffer;
-  /** `channels[col][i]` — col 0 = payer/agent channel, col 1 = gateway→provider channel (route). */
-  channels: PublicKey[][];
+  kind: number;
+  records: { data: Buffer; channels: PublicKey[] }[];
 }
 
-function padTo<T>(xs: T[], n: number): T[] {
+function u64le(v: bigint): Buffer {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(v);
+  return b;
+}
+
+function checkSize<T>(xs: T[], n: number) {
   if (xs.length === 0 || xs.length > n) throw new Error(`batch must hold 1..${n} commitments, got ${xs.length}`);
-  const out = [...xs];
-  // Pad by repeating a real commitment: every padding slot is still a valid, verifiable record,
-  // so the circuit never sees garbage. Padded indices are >= count and ignored on-chain.
-  while (out.length < n) out.push(xs[0]);
-  return out;
 }
 
-/** Data columns: ids[N] | sig[3N]; channels for column 0. */
+/** Record: channel_id u64 | target u64 | sig[64]; accounts: channel. */
 export function buildUnilateralBatch(records: UnilateralRecord[]): Batch {
-  const rs = padTo(records, N_UNI);
-  const cols: Buffer[] = [];
-  for (const r of rs) cols.push(u128Slot(bodySlots(r.commitment)[0]));
-  for (const r of rs) cols.push(...packBytesToSlots(r.signature));
-  const slots = Buffer.concat(cols);
-  if (slots.length !== UNILATERAL_DATA_SLOTS * SLOT) throw new Error(`bad unilateral batch length ${slots.length}`);
-  return { slots, channels: [rs.map((r) => r.channel)] };
+  checkSize(records, N_UNI);
+  return {
+    kind: KIND_UNILATERAL,
+    records: records.map((r) => ({
+      data: Buffer.concat([u64le(r.commitment.channelId), u64le(r.commitment.targetCumulative), Buffer.from(r.signature)]),
+      channels: [r.channel],
+    })),
+  };
 }
 
-/** Data columns: ids[N] | targets[N] | sig_agent[3N] | sig_gateway[3N]; channels for columns 0 and 1. */
+/** Record: ag_id u64 | gp_id u64 | target_ag u64 | target_gp u64 | sig_agent[64] | sig_gateway[64]; accounts: channel_ag, channel_gp. */
 export function buildRouteBatch(records: RouteRecord[]): Batch {
-  const rs = padTo(records, N_ROUTE);
-  const cols: Buffer[] = [];
-  for (const r of rs) cols.push(u128Slot(bodySlots(r.commitment)[0]));
-  for (const r of rs) cols.push(u128Slot(bodySlots(r.commitment)[1]));
-  for (const r of rs) cols.push(...packBytesToSlots(r.agentSignature));
-  for (const r of rs) cols.push(...packBytesToSlots(r.gatewaySignature));
-  const slots = Buffer.concat(cols);
-  if (slots.length !== ROUTE_DATA_SLOTS * SLOT) throw new Error(`bad route batch length ${slots.length}`);
-  return { slots, channels: [rs.map((r) => r.channelAg), rs.map((r) => r.channelGp)] };
+  checkSize(records, N_ROUTE);
+  return {
+    kind: KIND_ROUTE,
+    records: records.map((r) => ({
+      data: Buffer.concat([
+        u64le(r.commitment.channelAgId), u64le(r.commitment.channelGpId),
+        u64le(r.commitment.targetAg), u64le(r.commitment.targetGp),
+        Buffer.from(r.agentSignature), Buffer.from(r.gatewaySignature),
+      ]),
+      channels: [r.channelAg, r.channelGp],
+    })),
+  };
 }
 
 export const clearingPda = (programId: PublicKey, staging: PublicKey) =>
   PublicKey.findProgramAddressSync([Buffer.from("clearing"), staging.toBuffer()], programId)[0];
 
-/** Slots per legacy transaction: 30 × 32 = 960 bytes of instruction data (1,232-byte packet). */
-const SLOTS_PER_LEGACY_TX = 30;
-/** Slots per v1 transaction: 120 × 32 = 3,840 bytes of instruction data (4,096-byte packet). */
-const SLOTS_PER_V1_TX = 120;
-/** A stage_slots chunk this small still fits in one legacy tx alongside seal_and_queue's 15 accounts. */
-const MERGEABLE_TAIL_SLOTS = 18;
-/** Channel accounts per staging transaction: one stage_channels call's worth in legacy, three in v1. */
-const CHANNELS_PER_LEGACY_TX = MAX_CHANNELS_PER_STAGE;
-const CHANNELS_PER_V1_TX = 3 * MAX_CHANNELS_PER_STAGE;
+/** Legacy packet limit; staging transactions are packed against the real serialized size. */
+const LEGACY_TX_BYTES = 1232;
+/** Records per v1 (4,096 B) transaction: 16 routes (226 B each) / 32 unilateral (113 B each). */
+const V1_RECORDS_PER_TX = { [KIND_UNILATERAL]: 32, [KIND_ROUTE]: 16 } as const;
+const DUMMY_BLOCKHASH = "11111111111111111111111111111111";
 
-/** Split `channels` per column into stage_channels calls, then pack calls into transactions of at most `perTx` accounts. */
-function packChannelCalls(channels: PublicKey[][], perTx: number): { col: number; start: number; part: PublicKey[] }[][] {
-  const calls: { col: number; start: number; part: PublicKey[] }[] = [];
-  channels.forEach((chs, col) => {
-    for (let start = 0; start < chs.length; start += MAX_CHANNELS_PER_STAGE)
-      calls.push({ col, start, part: chs.slice(start, start + MAX_CHANNELS_PER_STAGE) });
-  });
-  calls.sort((a, b) => b.part.length - a.part.length); // big calls first, remainders share a tx
-  const txs: typeof calls[] = [];
-  for (const c of calls) {
-    const home = txs.find((t) => t.reduce((n, x) => n + x.part.length, 0) + c.part.length <= perTx);
-    if (home) home.push(c); else txs.push([c]);
+/** Serialized legacy size of a transaction holding `ixs` with one signer. */
+function legacySize(feePayer: PublicKey, ixs: TransactionInstruction[]): number {
+  const tx = new anchor.web3.Transaction({ feePayer, recentBlockhash: DUMMY_BLOCKHASH }).add(...ixs);
+  try {
+    return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).length;
+  } catch {
+    return Number.MAX_SAFE_INTEGER; // web3 refuses to serialize an oversized message
   }
-  return txs;
 }
 
 let v1Support: boolean | undefined;
@@ -167,13 +157,15 @@ export async function supportsTxV1(program: Program<RyvoProtocol>, payer: Keypai
   return v1Support;
 }
 
-/** Staging transactions a full batch of `kind` needs under each format (for reporting). */
-export function stagingTxCount(kind: number): { legacy: number; v1: number } {
-  const slots = kind === KIND_UNILATERAL ? UNILATERAL_DATA_SLOTS : ROUTE_DATA_SLOTS;
-  const tail = slots % SLOTS_PER_LEGACY_TX;
-  const legacySlots = Math.floor(slots / SLOTS_PER_LEGACY_TX) + (tail === 0 ? 0 : 1) - (tail > 0 && tail <= MERGEABLE_TAIL_SLOTS ? 1 : 0);
-  const cols = kind === KIND_UNILATERAL ? [new Array(N_UNI).fill(PublicKey.default)] : [new Array(N_ROUTE).fill(PublicKey.default), new Array(N_ROUTE).fill(PublicKey.default)];
-  return { legacy: legacySlots + packChannelCalls(cols, CHANNELS_PER_LEGACY_TX).length, v1: Math.ceil(slots / SLOTS_PER_V1_TX) + packChannelCalls(cols, CHANNELS_PER_V1_TX).length };
+/** Staging transactions a full batch of `kind` needs under each format (for reporting): a dry run of the packer. */
+export async function stagingTxCount(program: Program<RyvoProtocol>, relayer: Keypair, kind: number): Promise<{ legacy: number; v1: number }> {
+  const n = kind === KIND_UNILATERAL ? N_UNI : N_ROUTE;
+  const len = kind === KIND_UNILATERAL ? UNILATERAL_RECORD_LEN : ROUTE_RECORD_LEN;
+  const batch: Batch = { kind, records: Array.from({ length: n }, () => ({ data: Buffer.alloc(len, 1), channels: Array.from({ length: kind === KIND_UNILATERAL ? 1 : 2 }, () => Keypair.generate().publicKey) })) };
+  const staging = Keypair.generate().publicKey;
+  const legacy = (await planStaging(program, relayer, staging, batch, { fresh: false, reclaim: new anchor.BN(1) }, false)).txs.length;
+  const v1 = (await planStaging(program, relayer, staging, batch, { fresh: false, reclaim: new anchor.BN(1) }, true)).txs.length;
+  return { legacy, v1 };
 }
 
 /**
@@ -208,81 +200,119 @@ export async function claimComputationRentIx(program: Program<RyvoProtocol>, pay
     .instruction();
 }
 
+interface StagingPlan {
+  /** Transactions to send, in order; the first carries `reset_staging` when the buffer is reused. */
+  txs: TransactionInstruction[][];
+  /** Instructions that ride in the seal_and_queue transaction (rent claim, a small tail of records). */
+  sealPre: TransactionInstruction[];
+  /** Number of records that ride in the seal transaction. */
+  tailRecords: number;
+}
+
+/**
+ * Pack a batch into transactions against the real serialized size (legacy) or a fixed record
+ * count (v1). The previous computation's rent claim and the last few records ride in the
+ * seal_and_queue transaction when they fit.
+ */
+async function planStaging(
+  program: Program<RyvoProtocol>,
+  relayer: Keypair,
+  staging: PublicKey,
+  batch: Batch,
+  opts: { fresh?: boolean; reclaim?: anchor.BN },
+  useV1: boolean,
+): Promise<StagingPlan> {
+  const stageIx = (start: number, recs: Batch["records"]) => program.methods
+    .stageRecords(start, Buffer.concat(recs.map((r) => r.data)))
+    .accounts({ relayer: relayer.publicKey, staging })
+    .remainingAccounts(recs.flatMap((r) => r.channels.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }))))
+    .instruction();
+  const resetIx = opts.fresh ? undefined : await program.methods.resetStaging(batch.kind)
+    .accounts({ relayer: relayer.publicKey, staging, clearingResult: clearingPda(program.programId, staging) })
+    .instruction();
+  const claimIx = opts.reclaim ? await claimComputationRentIx(program, relayer.publicKey, opts.reclaim) : undefined;
+  // what the seal tx already carries: 15 accounts + its own data; measured against the same limit
+  const sealShape = await program.methods.sealAndQueueRoute(new anchor.BN(1), 1)
+    .accountsPartial(sealAccounts(program, relayer.publicKey, staging, batch.kind, new anchor.BN(1))).instruction();
+
+  const recs = batch.records;
+  const txs: TransactionInstruction[][] = [];
+  let sealPre: TransactionInstruction[] = claimIx ? [claimIx] : [];
+  let tailRecords = 0;
+  if (useV1) {
+    const per = V1_RECORDS_PER_TX[batch.kind as keyof typeof V1_RECORDS_PER_TX];
+    for (let i = 0; i < recs.length; i += per) {
+      const ixs = [await stageIx(i, recs.slice(i, i + per))];
+      if (i === 0 && resetIx) ixs.unshift(resetIx);
+      txs.push(ixs);
+    }
+    return { txs, sealPre, tailRecords };
+  }
+  // legacy: grow each chunk until the next record no longer fits
+  let i = 0;
+  while (i < recs.length) {
+    const extras = i === 0 && resetIx ? [resetIx] : [];
+    let n = 1;
+    let ix = await stageIx(i, recs.slice(i, i + 1));
+    while (i + n < recs.length) {
+      const next = await stageIx(i, recs.slice(i, i + n + 1));
+      if (legacySize(relayer.publicKey, [...extras, next]) > LEGACY_TX_BYTES) break;
+      ix = next;
+      n++;
+    }
+    // the last chunk rides in the seal tx if it fits there
+    if (i + n >= recs.length && legacySize(relayer.publicKey, [...sealPre, ...extras, ix, sealShape]) <= LEGACY_TX_BYTES) {
+      sealPre = [...sealPre, ...extras, ix];
+      tailRecords = n;
+      break;
+    }
+    txs.push([...extras, ix]);
+    i += n;
+  }
+  return { txs, sealPre, tailRecords };
+}
+
+function sealAccounts(program: Program<RyvoProtocol>, relayer: PublicKey, staging: PublicKey, kind: number, computationOffset: anchor.BN) {
+  const { env, clusterAccount } = arciumEnv();
+  return {
+    relayer,
+    config: PublicKey.findProgramAddressSync([Buffer.from("config")], program.programId)[0],
+    staging,
+    clearingResult: clearingPda(program.programId, staging),
+    computationAccount: getComputationAccAddress(env.arciumClusterOffset, computationOffset),
+    clusterAccount,
+    mxeAccount: getMXEAccAddress(program.programId),
+    mempoolAccount: getMempoolAccAddress(env.arciumClusterOffset),
+    executingPool: getExecutingPoolAccAddress(env.arciumClusterOffset),
+    compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(getCompDefAccOffset(CIRCUITS[kind as 1 | 2])).readUInt32LE()),
+  };
+}
+
 /**
  * Stage a batch into an existing buffer. The first transaction carries `reset_staging` (which
  * requires the previous batch to be fully settled) unless `fresh` says the buffer was just
- * opened; pass the previous batch's computation offset as `reclaim` and the same transaction
- * also claims that computation account's rent back. Returns the last chunk *unsent* when it is
- * small enough to ride along with `seal_and_queue` in one transaction; pass it to `sealAndQueue`
- * as `tailIx`.
+ * opened. Pass the previous batch's computation offset as `reclaim` and its rent claim rides in
+ * the seal transaction. Returns the instructions that must go into the seal transaction
+ * (`sealPre`: the claim and any tail records) — hand them to `sealAndQueue`.
  */
 export async function stageBatch(
   program: Program<RyvoProtocol>,
   relayer: Keypair,
   staging: PublicKey,
-  kind: number,
   batch: Batch,
   opts: { fresh?: boolean; reclaim?: anchor.BN } = {},
-): Promise<{ tailIx?: TransactionInstruction; txCount: number }> {
-  const { slots } = batch;
-  const total = slots.length / SLOT;
+): Promise<{ sealPre: TransactionInstruction[]; txCount: number; tailRecords: number }> {
   const useV1 = await supportsTxV1(program, relayer);
-  const per = useV1 ? SLOTS_PER_V1_TX : SLOTS_PER_LEGACY_TX;
-  const chunk = (s: number, n: number) => program.methods
-    .stageSlots(s, slots.subarray(s * SLOT, (s + n) * SLOT))
-    .accounts({ relayer: relayer.publicKey, staging })
-    .instruction();
-
-  const sends: Promise<unknown>[] = [];
-  let txCount = 0;
+  const plan = await planStaging(program, relayer, staging, batch, opts, useV1);
   const send = async (ixs: TransactionInstruction[]) => {
-    txCount++;
-    if (useV1) return sendV1(program.provider.connection, ixs, [relayer], { computeUnitLimit: 60_000 });
+    if (useV1) return sendV1(program.provider.connection, ixs, [relayer], { computeUnitLimit: 200_000 });
     const tx = new anchor.web3.Transaction().add(...ixs);
     return (program.provider as anchor.AnchorProvider).sendAndConfirm(tx, [relayer], { commitment: "confirmed" });
   };
-
-  // stage_channels: the program copies address + registered key for indices start.. of a column
-  const channelTxs: TransactionInstruction[][] = [];
-  for (const calls of packChannelCalls(batch.channels, useV1 ? CHANNELS_PER_V1_TX : CHANNELS_PER_LEGACY_TX)) {
-    channelTxs.push(await Promise.all(calls.map(({ col, start, part }) => program.methods
-      .stageChannels(col, start)
-      .accounts({ relayer: relayer.publicKey, staging })
-      .remainingAccounts(part.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false })))
-      .instruction())));
-  }
-
-  let s = 0;
-  let first = true;
-  let tailIx: TransactionInstruction | undefined;
-  while (s < total) {
-    const n = Math.min(per, total - s);
-    const isLast = s + n >= total;
-    if (isLast && !useV1 && n <= MERGEABLE_TAIL_SLOTS && !first) {
-      tailIx = await chunk(s, n); // merged into seal_and_queue by the caller
-      break;
-    }
-    const ixs: TransactionInstruction[] = [];
-    if (first && !opts.fresh) {
-      ixs.push(await program.methods.resetStaging(kind)
-        .accounts({ relayer: relayer.publicKey, staging, clearingResult: clearingPda(program.programId, staging) })
-        .instruction());
-    }
-    ixs.push(await chunk(s, n));
-    // the reset must land before any other chunk; send it alone first, the rest in parallel
-    if (first) await send(ixs); else sends.push(send(ixs));
-    first = false;
-    s += n;
-  }
-  // the previous computation's rent claim rides in the smallest channel tx (the remainder one)
-  if (opts.reclaim) {
-    const claim = await claimComputationRentIx(program, relayer.publicKey, opts.reclaim);
-    const smallest = channelTxs.reduce((a, b) => (a.reduce((n, ix) => n + ix.keys.length, 0) <= b.reduce((n, ix) => n + ix.keys.length, 0) ? a : b));
-    if (smallest.reduce((n, ix) => n + ix.keys.length, 0) <= 24) smallest.push(claim); else channelTxs.push([claim]);
-  }
-  for (const ixs of channelTxs) sends.push(send(ixs));
-  await Promise.all(sends);
-  return { tailIx, txCount };
+  // the reset must land before any other chunk: first tx alone, the rest in parallel
+  if (plan.txs.length) await send(plan.txs[0]);
+  await Promise.all(plan.txs.slice(1).map(send));
+  return { sealPre: plan.sealPre, txCount: plan.txs.length, tailRecords: plan.tailRecords };
 }
 
 export function arciumEnv() {
@@ -297,28 +327,14 @@ export async function sealAndQueue(
   staging: PublicKey,
   kind: number,
   count: number,
-  tailIx?: TransactionInstruction,
+  pre: TransactionInstruction[] = [],
 ): Promise<{ computationOffset: anchor.BN; clearingResult: PublicKey; sig: string }> {
-  const { env, clusterAccount } = arciumEnv();
   const computationOffset = new anchor.BN(randomBytes(8), "hex");
-  const circuit = kind === KIND_UNILATERAL ? "clear_unilateral" : "clear_route";
   const clearingResult = clearingPda(program.programId, staging);
-  const accounts = {
-    relayer: relayer.publicKey,
-    config: PublicKey.findProgramAddressSync([Buffer.from("config")], program.programId)[0],
-    staging,
-    clearingResult,
-    computationAccount: getComputationAccAddress(env.arciumClusterOffset, computationOffset),
-    clusterAccount,
-    mxeAccount: getMXEAccAddress(program.programId),
-    mempoolAccount: getMempoolAccAddress(env.arciumClusterOffset),
-    executingPool: getExecutingPoolAccAddress(env.arciumClusterOffset),
-    compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(getCompDefAccOffset(circuit)).readUInt32LE()),
-  };
+  const accounts = sealAccounts(program, relayer.publicKey, staging, kind, computationOffset);
   const m = kind === KIND_UNILATERAL
     ? program.methods.sealAndQueueUnilateral(computationOffset, count)
     : program.methods.sealAndQueueRoute(computationOffset, count);
-  const pre: TransactionInstruction[] = tailIx ? [tailIx] : [];
   const sig = await m.accountsPartial(accounts).preInstructions(pre).signers([relayer]).rpc({ commitment: "confirmed" });
   return { computationOffset, clearingResult, sig };
 }
@@ -380,7 +396,7 @@ export async function ensureCompDef(
   program: Program<RyvoProtocol>,
   provider: anchor.AnchorProvider,
   payer: Keypair,
-  circuit: "clear_unilateral" | "clear_route",
+  circuit: CircuitName,
   offchainUrl?: string,
 ): Promise<PublicKey> {
   const arciumProgram = getArciumProgram(provider);
@@ -393,7 +409,7 @@ export async function ensureCompDef(
   const mxeAccount = getMXEAccAddress(program.programId);
   const mxeAcc = await arciumProgram.account.mxeAccount.fetch(mxeAccount);
   const lut = getLookupTableAddress(program.programId, mxeAcc.lutOffsetSlot);
-  const m = circuit === "clear_unilateral"
+  const m = circuit === "clear_unilateral64"
     ? program.methods.initClearUnilateralCompDef(offchainUrl ?? null)
     : program.methods.initClearRouteCompDef(offchainUrl ?? null);
   await m

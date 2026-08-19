@@ -180,13 +180,13 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   /** Stage into the shared buffer (resetting it) + queue + wait; returns the bitmap. */
   async function clear(kind: number, batch: Batch, count: number) {
     const t0 = Date.now();
-    const { tailIx, txCount } = await stageBatch(program, relayer, staging, kind, batch, { fresh: firstBatch, reclaim: lastComputation });
+    const { sealPre, txCount, tailRecords } = await stageBatch(program, relayer, staging, batch, { fresh: firstBatch, reclaim: lastComputation });
     firstBatch = false;
-    const { computationOffset, clearingResult } = await sealAndQueue(program, relayer, staging, kind, count, tailIx);
+    const { computationOffset, clearingResult } = await sealAndQueue(program, relayer, staging, kind, count, sealPre);
     lastComputation = computationOffset;
     await awaitClearing(provider, program, computationOffset);
     const r = await program.account.clearingResult.fetch(clearingResult);
-    console.log(`      [clear] kind=${kind} count=${count} verified=${r.verified} bits=${JSON.stringify(bitmapBits(r.bitmap as number[], count))} staging tx=${txCount + 1}${tailIx ? " (tail merged into seal)" : ""} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    console.log(`      [clear] kind=${kind} count=${count} verified=${r.verified} bits=${JSON.stringify(bitmapBits(r.bitmap as number[], count))} staging tx=${txCount + 1}${tailRecords ? ` (${tailRecords} records ride in the seal tx)` : ""} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     if (!r.verified) {
       throw new Error(r.failed
         ? "computation FAILED (BatchClearingFailed) — check artifacts/arx_node_logs (circuit fetch?)"
@@ -209,8 +209,8 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
 
     const baseUrl: string | undefined = process.env.RYVO_CIRCUIT_BASE_URL;
     const t0 = Date.now();
-    await ensureCompDef(program, provider, relayer, "clear_unilateral", baseUrl && `${baseUrl}/clear_unilateral.arcis`);
-    await ensureCompDef(program, provider, relayer, "clear_route", baseUrl && `${baseUrl}/clear_route.arcis`);
+    await ensureCompDef(program, provider, relayer, "clear_unilateral64", baseUrl && `${baseUrl}/clear_unilateral64.arcis`);
+    await ensureCompDef(program, provider, relayer, "clear_route64", baseUrl && `${baseUrl}/clear_route64.arcis`);
     console.log(`      comp defs ready in ${((Date.now() - t0) / 1000).toFixed(1)}s (${baseUrl ? "off-chain URL" : "on-chain upload"})`);
 
     agents = [await makeParty(100 * ONE), await makeParty(100 * ONE), await makeParty(100 * ONE)];
@@ -267,7 +267,12 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
     expect(bits).to.deep.equal([true, true]);
     // The buffer cannot be reset for a new batch while verified commitments are still unapplied.
-    await expectReject(stageBatch(program, relayer, staging, KIND_UNILATERAL, buildUnilateralBatch(records)), /StagingBusy/);
+    // (a small batch rides entirely in the seal tx together with reset_staging, so the rejection
+    // surfaces there; a bigger one is rejected by the first staging tx)
+    await expectReject((async () => {
+      const busy = await stageBatch(program, relayer, staging, buildUnilateralBatch(records));
+      await sealAndQueue(program, relayer, staging, KIND_UNILATERAL, records.length, busy.sealPre);
+    })(), /StagingBusy/);
     const gBefore = await avail(gateway);
     await settle(program, staging, [0, 1], (i) => [i === 0 ? chanAG[1].key : chanAG[0].key, gateway.balance]);
     expect(await chan(chanAG[1])).to.deep.equal({ settled: 50 * ONE, locked: 0 });
@@ -340,10 +345,10 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await assertSolvent();
   });
 
-  it("clears a full route batch of 32 distinct agents and settles all of them (many-channel case)", async () => {
-    // Every batch index names its own agent channel: 32 + 2 distinct channels. Keys are copied
-    // on-chain by stage_channels, so the computation still has three account arguments — the
-    // Arcium program refuses a queue whose account arguments name more than ~14 distinct
+  it("clears a full route batch of N_ROUTE distinct agents and settles all of them (many-channel case)", async () => {
+    // Every batch index names its own agent channel: N_ROUTE + 2 distinct channels. Keys are
+    // copied on-chain by stage_records, so the computation has a handful of account arguments —
+    // the Arcium program refuses a queue whose account arguments name more than ~14 distinct
     // accounts, which is what per-channel arguments ran into on devnet.
     const many: Chan[] = [];
     for (let i = 0; i < N_ROUTE; i++) {

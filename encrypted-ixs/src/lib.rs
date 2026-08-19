@@ -22,7 +22,7 @@ mod circuits {
     /// Arcium program's own 32 KB heap tops out somewhere between 66 and 131 account arguments
     /// per computation.
     pub const N_UNI: usize = 64;
-    pub const N_ROUTE: usize = 32;
+    pub const N_ROUTE: usize = 64;
 
     /// `b"ryvo-commitment-v1"`
     const TAG: [u8; 18] = [
@@ -50,7 +50,7 @@ mod circuits {
 
     /// One signer per record. Preimage: TAG(18) | domain(16) | 0x01 | 0x01 | id_target(16) = 52 B.
     #[instruction]
-    pub fn clear_unilateral(
+    pub fn clear_unilateral64(
         domain: u128,
         ids: [u128; N_UNI],
         vks: [Pack<VerifyingKey>; N_UNI],
@@ -82,7 +82,7 @@ mod circuits {
     /// (channel_gp). Preimage: TAG | domain | 0x02 | 0x01 | ids(16) | targets(16) = 68 B.
     /// The bit is set only if BOTH signatures verify.
     #[instruction]
-    pub fn clear_route(
+    pub fn clear_route64(
         domain: u128,
         ids: [u128; N_ROUTE],
         targets: [u128; N_ROUTE],
