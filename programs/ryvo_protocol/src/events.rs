@@ -161,6 +161,14 @@ pub struct BatchAbandoned {
     pub verified: bool,
 }
 
+/// A genuine callback from one of our computations arrived for a batch that is no longer bound
+/// to it (abandoned or superseded). Nothing was recorded.
+#[event]
+pub struct StaleCallbackIgnored {
+    pub clearing_result: Pubkey,
+    pub computation_account: Pubkey,
+}
+
 #[event]
 pub struct BatchClearingFailed {
     pub staging: Pubkey,

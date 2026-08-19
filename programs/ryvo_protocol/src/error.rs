@@ -96,4 +96,6 @@ pub enum RyvoError {
     IncompleteBatch,
     #[msg("Callback computation was not queued by this program for this circuit")]
     ForeignComputation,
+    #[msg("Commitment target is at or below the channel's settled watermark")]
+    CommitmentAlreadySettled,
 }

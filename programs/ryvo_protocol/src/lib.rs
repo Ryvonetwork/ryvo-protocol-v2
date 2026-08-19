@@ -187,20 +187,28 @@ pub mod ryvo_protocol {
         clearing::stage_records_handler(ctx, start, data)
     }
 
+    /// `callback_cu_limit` / `cu_price_micro` are passed through to Arcium (0 = node default /
+    /// lowest priority); the relayer pays, so it chooses.
     pub fn seal_and_queue_unilateral(
         ctx: Context<SealAndQueueUnilateral>,
         computation_offset: u64,
         count: u16,
+        callback_cu_limit: u32,
+        cu_price_micro: u64,
     ) -> Result<()> {
-        clearing::seal_and_queue_unilateral_handler(ctx, computation_offset, count)
+        clearing::seal_and_queue_unilateral_handler(ctx, computation_offset, count, callback_cu_limit, cu_price_micro)
     }
 
+    /// `callback_cu_limit` / `cu_price_micro` are passed through to Arcium (0 = node default /
+    /// lowest priority); the relayer pays, so it chooses.
     pub fn seal_and_queue_route(
         ctx: Context<SealAndQueueRoute>,
         computation_offset: u64,
         count: u16,
+        callback_cu_limit: u32,
+        cu_price_micro: u64,
     ) -> Result<()> {
-        clearing::seal_and_queue_route_handler(ctx, computation_offset, count)
+        clearing::seal_and_queue_route_handler(ctx, computation_offset, count, callback_cu_limit, cu_price_micro)
     }
 
     // --- clearing: callbacks (invoked by Arcium) ---
@@ -210,12 +218,17 @@ pub mod ryvo_protocol {
         ctx: Context<ClearUnilateral64Callback>,
         output: SignedComputationOutputs<ClearUnilateral64Output>,
     ) -> Result<()> {
-        clearing::require_current_computation(
+        if let clearing::CallbackMatch::Stale = clearing::require_current_computation(
             &ctx.accounts.clearing_result,
             &ctx.accounts.computation_account.to_account_info(),
             &ctx.accounts.mxe_account,
             clearing::comp_def_offset_for(KIND_UNILATERAL),
-        )?;
+        )? {
+            // Ours, but not the batch in flight: let Arcium finalize it (so the rent is
+            // reclaimable) and record nothing.
+            emit!(StaleCallbackIgnored { clearing_result: ctx.accounts.clearing_result.key(), computation_account: ctx.accounts.computation_account.key() });
+            return Ok(());
+        }
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
         }
@@ -234,12 +247,17 @@ pub mod ryvo_protocol {
         ctx: Context<ClearRoute64Callback>,
         output: SignedComputationOutputs<ClearRoute64Output>,
     ) -> Result<()> {
-        clearing::require_current_computation(
+        if let clearing::CallbackMatch::Stale = clearing::require_current_computation(
             &ctx.accounts.clearing_result,
             &ctx.accounts.computation_account.to_account_info(),
             &ctx.accounts.mxe_account,
             clearing::comp_def_offset_for(KIND_ROUTE),
-        )?;
+        )? {
+            // Ours, but not the batch in flight: let Arcium finalize it (so the rent is
+            // reclaimable) and record nothing.
+            emit!(StaleCallbackIgnored { clearing_result: ctx.accounts.clearing_result.key(), computation_account: ctx.accounts.computation_account.key() });
+            return Ok(());
+        }
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
         }

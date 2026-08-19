@@ -70,7 +70,7 @@
 use crate::commitment::{pack_pair, pack_signature, unpack_pair, PUBKEY_SLOTS as KEY_SLOTS, KIND_ROUTE, KIND_UNILATERAL, SIG_SLOTS, SLOT};
 use crate::constants::{CLEARING_SEED, CONFIG_SEED};
 use crate::error::RyvoError;
-use crate::events::{BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled, RouteSettled};
+use crate::events::{BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled, RouteSettled, StaleCallbackIgnored};
 use crate::state::{Balance, Channel, Config};
 use crate::{ArciumSignerAccount, ID, ID_CONST};
 use anchor_lang::prelude::*;
@@ -121,8 +121,8 @@ const COMP_DEF_OFFSET_CLEAR_ROUTE: u32 = comp_def_offset("clear_route64");
 // State
 // ============================================================================================
 
-/// One relayer's batch buffer, reused across batches. Zero-copy: 20 KB, and `settle_channels`
-/// reads only the slots it needs.
+/// One relayer's batch buffer, reused across batches. Zero-copy: 28.7 KB (896 slots), and
+/// `settle_channels` reads only the slots it needs.
 ///
 /// Not a PDA: it exceeds the 10 KB cap on accounts created inside a CPI, so the relayer creates
 /// it with `SystemProgram::create_account` in the same transaction as `open_staging`, which takes
@@ -217,7 +217,13 @@ pub struct ClearingResult {
     pub computation_offset: u64,
     /// `StagingBuffer.batch_seq` at seal time, for events and post-mortems.
     pub batch_seq: u64,
-    pub _reserved: [u8; 15],
+    /// `(slot, slot_counter)` of the computation account right after it was queued — the same
+    /// two fields the cluster's BLS signature covers. The computation PDA is only
+    /// `(cluster, offset)`, so an offset can be reused once the old account is closed; these pin
+    /// the verdict to the exact computation instance this batch was queued as.
+    pub comp_slot: u64,
+    pub comp_slot_counter: u16,
+    pub _reserved: [u8; 5],
 }
 
 impl ClearingResult {
@@ -231,6 +237,8 @@ impl ClearingResult {
         // No computation is bound until the next seal, so a late callback for an abandoned one
         // is refused rather than recorded against an unsealed buffer.
         self.computation_offset = 0;
+        self.comp_slot = 0;
+        self.comp_slot_counter = 0;
     }
     /// Every verified commitment applied, or the computation failed.
     pub fn is_done(&self) -> bool {
@@ -283,6 +291,8 @@ pub fn init_arcium_signer_handler(ctx: Context<InitArciumSigner>) -> Result<()> 
 pub struct InitClearUnilateralCompDef<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
+    // Arcium's `init_computation_definition` itself requires the payer to be the MXE authority
+    // (`InvalidAuthority` otherwise), so a stranger cannot register a dead circuit URL for us.
     #[account(mut, address = derive_mxe_pda!())]
     pub mxe_account: Box<Account<'info, MXEAccount>>,
     #[account(mut)]
@@ -303,6 +313,8 @@ pub struct InitClearUnilateralCompDef<'info> {
 pub struct InitClearRouteCompDef<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
+    // Arcium's `init_computation_definition` itself requires the payer to be the MXE authority
+    // (`InvalidAuthority` otherwise), so a stranger cannot register a dead circuit URL for us.
     #[account(mut, address = derive_mxe_pda!())]
     pub mxe_account: Box<Account<'info, MXEAccount>>,
     #[account(mut)]
@@ -356,7 +368,9 @@ pub fn open_staging_handler(ctx: Context<OpenStaging>, kind: u8) -> Result<()> {
     r.bump = ctx.bumps.clearing_result;
     r.computation_offset = 0;
     r.batch_seq = 0;
-    r._reserved = [0u8; 15];
+    r.comp_slot = 0;
+    r.comp_slot_counter = 0;
+    r._reserved = [0u8; 5];
     r.clear(kind, 0);
     Ok(())
 }
@@ -379,8 +393,7 @@ pub struct ResetStaging<'info> {
 /// that is not done — callback never landed, or verified commitments left unapplied — is
 /// abandoned, which is safe because a commitment is never "consumed" by a batch: monotonicity
 /// lives on the channel, so anything skipped here is simply re-submittable, and a late callback
-/// for the abandoned computation is refused by the `computation_offset` binding. Slots are not
-/// zeroed; `staged_mask` makes sure the next batch cannot reuse them by accident.
+/// for the abandoned computation is refused by the `computation_offset` binding.
 pub fn reset_staging_handler(ctx: Context<ResetStaging>, kind: u8) -> Result<()> {
     StagingBuffer::slots_per_record(kind)?;
     let mut s = ctx.accounts.staging.load_mut()?;
@@ -398,6 +411,11 @@ pub fn reset_staging_handler(ctx: Context<ResetStaging>, kind: u8) -> Result<()>
     s.kind = kind;
     s.sealed = 0;
     s.staged_mask = 0;
+    // Zero the slots (one memset; cheap). `staged_mask` already guarantees a sealed batch never
+    // carries an older batch's bytes below `count`; this removes them from the account entirely,
+    // so even a node that read the buffer at a stale slot could only ever see zeros, never a
+    // previous batch's valid records at this batch's indices.
+    s.slots.fill([0u8; SLOT]);
     r.clear(kind, 0);
     Ok(())
 }
@@ -452,6 +470,10 @@ pub fn stage_records_handler<'info>(
                 write_sig(&mut s.slots, UNI_COL_SIG + SIG_SLOTS * i, &rec[16..80]);
                 let ch = write_channel(&mut s.slots, UNI_COL_KEY + KEY_SLOTS * i, UNI_COL_CHANNEL + i, &chans[0])?;
                 require!(ch.channel_id == channel_id, RyvoError::StagedRecordMismatch);
+                // A commitment at or below the channel's watermark can move nothing: refuse it
+                // here rather than spend MPC work and a batch slot on it (and deny the
+                // write-lock griefing that dust re-submissions would otherwise allow).
+                require!(u64_at(rec, 8) > ch.settled_cumulative, RyvoError::CommitmentAlreadySettled);
             }
             KIND_ROUTE => {
                 let (ag_id, gp_id) = (u64_at(rec, 0), u64_at(rec, 8));
@@ -463,6 +485,11 @@ pub fn stage_records_handler<'info>(
                 let gp = write_channel(&mut s.slots, RT_COL_KEY_G + KEY_SLOTS * i, RT_COL_CHANNEL_G + i, &chans[1])?;
                 require!(ag.channel_id == ag_id && gp.channel_id == gp_id, RyvoError::StagedRecordMismatch);
                 require!(ag.payee == gp.payer && ag.mint == gp.mint, RyvoError::StagedRecordMismatch);
+                // Either leg must still have something to move.
+                require!(
+                    u64_at(rec, 16) > ag.settled_cumulative || u64_at(rec, 24) > gp.settled_cumulative,
+                    RyvoError::CommitmentAlreadySettled
+                );
             }
             _ => unreachable!(),
         }
@@ -653,7 +680,10 @@ pub fn seal_and_queue_unilateral_handler(
     ctx: Context<SealAndQueueUnilateral>,
     computation_offset: u64,
     count: u16,
+    callback_cu_limit: u32,
+    cu_price_micro: u64,
 ) -> Result<()> {
+    require!(callback_cu_limit <= MAX_CALLBACK_CU_LIMIT, RyvoError::InvalidStagingData);
     let clearing_key = ctx.accounts.clearing_result.key();
     let args = seal_common(
         &ctx.accounts.staging,
@@ -673,9 +703,10 @@ pub fn seal_and_queue_unilateral_handler(
             &[CallbackAccount { pubkey: clearing_key, is_writable: true }],
         )?],
         1,
-        0,
-        0,
+        cu_price_micro,
+        callback_cu_limit,
     )?;
+    pin_computation(&mut ctx.accounts.clearing_result, &ctx.accounts.computation_account.to_account_info())?;
     emit!(BatchQueued {
         staging: ctx.accounts.staging.key(),
         clearing_result: clearing_key,
@@ -690,7 +721,10 @@ pub fn seal_and_queue_route_handler(
     ctx: Context<SealAndQueueRoute>,
     computation_offset: u64,
     count: u16,
+    callback_cu_limit: u32,
+    cu_price_micro: u64,
 ) -> Result<()> {
+    require!(callback_cu_limit <= MAX_CALLBACK_CU_LIMIT, RyvoError::InvalidStagingData);
     let clearing_key = ctx.accounts.clearing_result.key();
     let args = seal_common(
         &ctx.accounts.staging,
@@ -710,9 +744,10 @@ pub fn seal_and_queue_route_handler(
             &[CallbackAccount { pubkey: clearing_key, is_writable: true }],
         )?],
         1,
-        0,
-        0,
+        cu_price_micro,
+        callback_cu_limit,
     )?;
+    pin_computation(&mut ctx.accounts.clearing_result, &ctx.accounts.computation_account.to_account_info())?;
     emit!(BatchQueued {
         staging: ctx.accounts.staging.key(),
         clearing_result: clearing_key,
@@ -786,23 +821,68 @@ pub struct ClearRoute64Callback<'info> {
 /// THIS circuit (`mxe_program_id`, `computation_definition_offset` — only our sign-PDA-gated
 /// `seal_and_queue_*` can create such an account), (3) a batch is bound at all (offset ≠ 0,
 /// count > 0). A callback for an abandoned, earlier, or foreign computation is refused.
+/// Upper bound on the callback compute budget a relayer may request (the Solana per-tx cap).
+pub const MAX_CALLBACK_CU_LIMIT: u32 = 1_400_000;
+
+// ComputationAccount (Arcium): disc(8) | payer(32) | mxe_program_id(32) | computation_definition_offset(u32)
+// | execution_fee(24) | slot(u64) | slot_counter(u16) | …  — the same offsets arcium-anchor uses.
+const COMP_MXE_PROGRAM: core::ops::Range<usize> = 40..72;
+const COMP_DEF_OFFSET: core::ops::Range<usize> = 72..76;
+const COMP_SLOT: core::ops::Range<usize> = 100..108;
+const COMP_SLOT_COUNTER: core::ops::Range<usize> = 108..110;
+
+/// Record the exact computation instance right after the queue CPI created it.
+fn pin_computation(result: &mut ClearingResult, computation_account: &AccountInfo) -> Result<()> {
+    let data = computation_account.try_borrow_data()?;
+    require!(data.len() >= COMP_SLOT_COUNTER.end, RyvoError::ForeignComputation);
+    result.comp_slot = u64::from_le_bytes(data[COMP_SLOT].try_into().unwrap());
+    result.comp_slot_counter = u16::from_le_bytes(data[COMP_SLOT_COUNTER].try_into().unwrap());
+    Ok(())
+}
+
+/// Verdict of the callback's provenance check.
+pub enum CallbackMatch {
+    /// The computation this batch is bound to.
+    Current,
+    /// One of ours (queued by this program for this circuit) but not the bound one — abandoned,
+    /// earlier, or a reused offset. Ignore it quietly so Arcium can still finalize it and the
+    /// relayer can reclaim its rent.
+    Stale,
+}
+
+/// The callback must come from the computation this batch was sealed with. The Arcium program
+/// already guarantees the transaction is a genuine node callback; this decides whether it is
+/// *ours*, and current.
+///
+/// The computation PDA is scoped to the *cluster*, not to this program: `[seed, cluster, offset]`.
+/// Another MXE on the same cluster could queue a computation at an offset we once used (after
+/// ours was closed) with a custom callback aimed at this program and our accounts, and the
+/// cluster would sign its output honestly. So: the account must be owned by Arcium and say it
+/// was queued by THIS program for THIS circuit (only our sign-PDA-gated `seal_and_queue_*` can
+/// create such an account) — anything else is an error. Among ours, only the bound instance
+/// (offset + the `(slot, slot_counter)` pinned at queue time) is `Current`.
 pub fn require_current_computation(
     result: &ClearingResult,
     computation_account: &AccountInfo,
     mxe_account: &MXEAccount,
     comp_def_offset: u32,
-) -> Result<()> {
-    require!(result.computation_offset != 0 && result.count > 0, RyvoError::StaleCallback);
-    let expected = derive_comp_pda!(result.computation_offset, mxe_account);
-    require!(computation_account.key() == expected, RyvoError::StaleCallback);
+) -> Result<CallbackMatch> {
     require!(computation_account.owner == &ARCIUM_PROG_ID, RyvoError::ForeignComputation);
     let data = computation_account.try_borrow_data()?;
-    // ComputationAccount: disc(8) | payer(32) | mxe_program_id(32) | computation_definition_offset(u32) | …
-    require!(data.len() >= 76, RyvoError::ForeignComputation);
-    let mxe_program = Pubkey::new_from_array(data[40..72].try_into().unwrap());
-    let def = u32::from_le_bytes(data[72..76].try_into().unwrap());
+    require!(data.len() >= COMP_SLOT_COUNTER.end, RyvoError::ForeignComputation);
+    let mxe_program = Pubkey::new_from_array(data[COMP_MXE_PROGRAM].try_into().unwrap());
+    let def = u32::from_le_bytes(data[COMP_DEF_OFFSET].try_into().unwrap());
     require!(mxe_program == crate::ID && def == comp_def_offset, RyvoError::ForeignComputation);
-    Ok(())
+    if result.computation_offset == 0 || result.count == 0 {
+        return Ok(CallbackMatch::Stale);
+    }
+    let expected = derive_comp_pda!(result.computation_offset, mxe_account);
+    let slot = u64::from_le_bytes(data[COMP_SLOT].try_into().unwrap());
+    let counter = u16::from_le_bytes(data[COMP_SLOT_COUNTER].try_into().unwrap());
+    if computation_account.key() != expected || slot != result.comp_slot || counter != result.comp_slot_counter {
+        return Ok(CallbackMatch::Stale);
+    }
+    Ok(CallbackMatch::Current)
 }
 
 pub const fn comp_def_offset_for(kind: u8) -> u32 {

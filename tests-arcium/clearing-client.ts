@@ -244,7 +244,7 @@ async function planStaging(
     .instruction();
   const claimIx = opts.reclaim ? await claimComputationRentIx(program, relayer.publicKey, opts.reclaim) : undefined;
   // what the seal tx already carries: 15 accounts + its own data; measured against the same limit
-  const sealShape = await program.methods.sealAndQueueRoute(new anchor.BN(1), 1)
+  const sealShape = await program.methods.sealAndQueueRoute(new anchor.BN(1), 1, 0, new anchor.BN(0))
     .accountsPartial(sealAccounts(program, relayer.publicKey, staging, batch.kind, new anchor.BN(1))).instruction();
 
   const recs = batch.records;
@@ -344,9 +344,11 @@ export async function sealAndQueue(
   const computationOffset = new anchor.BN(randomBytes(8), "hex");
   const clearingResult = clearingPda(program.programId, staging);
   const accounts = sealAccounts(program, relayer.publicKey, staging, kind, computationOffset);
+  const cu = Number(process.env.RYVO_CALLBACK_CU_LIMIT ?? 0);          // 0 = Arcium node default
+  const price = new anchor.BN(process.env.RYVO_CU_PRICE_MICRO ?? 0);   // Arcium mempool priority
   const m = kind === KIND_UNILATERAL
-    ? program.methods.sealAndQueueUnilateral(computationOffset, count)
-    : program.methods.sealAndQueueRoute(computationOffset, count);
+    ? program.methods.sealAndQueueUnilateral(computationOffset, count, cu, price)
+    : program.methods.sealAndQueueRoute(computationOffset, count, cu, price);
   const sig = await m.accountsPartial(accounts).preInstructions(pre).signers([relayer]).rpc({ commitment: "confirmed" });
   return { computationOffset, clearingResult, sig };
 }

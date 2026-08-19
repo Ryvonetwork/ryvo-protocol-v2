@@ -189,8 +189,8 @@ pub fn digest_of(canonical: &[u8]) -> [u8; 32] {
 // Field-element slot packing, mirroring arcis-compiler's first-fit-decreasing byte packing:
 // 214 usable bits per element => 26 bytes per slot, little-endian within the slot. A 32-byte
 // public key is 2 slots (26 + 6), a 64-byte signature is 3 (26 + 26 + 12). These are the exact
-// bytes `Pack<VerifyingKey>` / `Pack<Sig>` unpack inside the circuit, and what `settle_channels`
-// reads back to compare against `Channel.authorized_signer`.
+// bytes `Pack<VerifyingKey>` / `Pack<Sig>` unpack inside the circuit; `stage_records` writes
+// them from the record and the `Channel` account.
 
 pub const SLOT: usize = 32;
 pub const BYTES_PER_SLOT: usize = 26;

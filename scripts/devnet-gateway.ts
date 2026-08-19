@@ -70,9 +70,12 @@ import {
 // ------------------------------------------------------------------ configuration
 const RPC = process.env.ANCHOR_PROVIDER_URL ?? "https://api.devnet.solana.com";
 const CLUSTER_OFFSET = Number(process.env.ARCIUM_CLUSTER_OFFSET ?? 456);
+// Pinned to the commit that added the *64 circuits: the comp def stores (url, hash) and the nodes
+// refuse a hash mismatch, so a URL that can change underneath is a liveness risk, not an
+// integrity one — pin it anyway. (The devnet comp defs were registered with the master URL.)
 const CIRCUIT_BASE_URL =
   process.env.RYVO_CIRCUIT_BASE_URL ??
-  "https://raw.githubusercontent.com/Ryvonetwork/ryvo-protocol-v2/master/circuits";
+  "https://raw.githubusercontent.com/Ryvonetwork/ryvo-protocol-v2/148c75c/circuits";
 const DEVNET_CHAIN_ID = 1;
 const CHANNEL_TIMELOCK = 10;
 const AGENTS = Number(process.env.RYVO_AGENTS ?? 100);

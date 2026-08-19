@@ -209,6 +209,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
 
     const baseUrl: string | undefined = process.env.RYVO_CIRCUIT_BASE_URL;
     const t0 = Date.now();
+    // comp defs can only be registered by the MXE authority (Arcium enforces it): the local wallet
     await ensureCompDef(program, provider, relayer, "clear_unilateral64", baseUrl && `${baseUrl}/clear_unilateral64.arcis`);
     await ensureCompDef(program, provider, relayer, "clear_route64", baseUrl && `${baseUrl}/clear_route64.arcis`);
     console.log(`      comp defs ready in ${((Date.now() - t0) / 1000).toFixed(1)}s (${baseUrl ? "off-chain URL" : "on-chain upload"})`);
@@ -223,6 +224,35 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await lock(chanAG[2], 100 * ONE);
     await assertSolvent();
     staging = await openStaging(program, relayer, KIND_UNILATERAL);
+  });
+
+  it("yields a false bit — not a failed batch — for an off-curve key and a garbage signature", async () => {
+    // A payer can register any 32 bytes as authorized_signer and a relayer can stage any 64 bytes
+    // as a signature. If either aborted the MPC instead of returning false, one bad record would
+    // poison the other 63 and burn the relayer's fee. Both must simply come back false.
+    const weird = await makeParty(10 * ONE);
+    const key = seeds.channel(program.programId, weird.participant, gateway.participant, mint);
+    await program.methods
+      .createChannel(new PublicKey(Buffer.alloc(32, 0xff))) // not a valid curve point
+      .accounts({
+        payerOwner: weird.owner.publicKey, config: configPda,
+        payerParticipant: weird.participant, payeeParticipant: gateway.participant,
+        mint, tokenConfig, payerBalance: weird.balance, payeeBalance: gateway.balance,
+        channel: key, systemProgram: SystemProgram.programId,
+      })
+      .signers([weird.owner]).rpc();
+    const c = await program.account.channel.fetch(key);
+    const weirdChan: Chan = { key, id: BigInt(c.channelId.toString()), payer: weird, payee: gateway };
+    await lock(weirdChan, 5 * ONE);
+    const records: UnilateralRecord[] = [
+      { commitment: uni(weirdChan, 1 * ONE), channel: key, signature: Buffer.alloc(64, 0xff) }, // garbage key + garbage sig
+      { ...uniRecord(chanAG[2], 1 * ONE), signature: Buffer.alloc(64, 0x01) },                  // real key, garbage sig
+      uniRecord(chanAG[2], 1 * ONE),                                                            // valid
+    ];
+    const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
+    expect(bits).to.deep.equal([false, false, true]);
+    await expectReject(settle(program, staging, [0], () => [key, gateway.balance]), /RecordNotVerified/);
+    // index 2 is left verified-but-unapplied on purpose: the next batch abandons it (allowed)
   });
 
   it("clears a unilateral batch: valid, corrupt, partial and settles the valid ones", async () => {
@@ -260,9 +290,15 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
 
   it("collects the remainder of a partially settled commitment in a later batch, and skips a satisfied one", async () => {
     await lock(chanAG[1], 20 * ONE); // agent 2 tops up; the same 50 commitment is still live
+    // A commitment at or below the channel's watermark is refused at stage time — it could only
+    // ever move 0, so it is not worth an MPC slot (and cannot be used for write-lock griefing).
+    await expectReject((async () => {
+      const plan = await stageBatch(program, relayer, staging, buildUnilateralBatch([uniRecord(chanAG[0], 40 * ONE)]));
+      await sealAndQueue(program, relayer, staging, KIND_UNILATERAL, 1, plan.sealPre);
+    })(), /CommitmentAlreadySettled/);
     const records = [
       uniRecord(chanAG[1], 50 * ONE), // same commitment as before -> moves the remaining 20
-      uniRecord(chanAG[0], 40 * ONE), // already fully settled -> moves 0, still "applied"
+      uniRecord(chanAG[1], 50 * ONE), // the same commitment twice in one batch: second moves 0, still "applied"
     ];
     const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
     expect(bits).to.deep.equal([true, true]);
@@ -272,13 +308,12 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const { bits: again } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
     expect(again).to.deep.equal([true, true]);
     const gBefore = await avail(gateway);
-    await settle(program, staging, [0, 1], (i) => [i === 0 ? chanAG[1].key : chanAG[0].key, gateway.balance]);
+    await settle(program, staging, [0, 1], () => [chanAG[1].key, gateway.balance]);
     expect(await chan(chanAG[1])).to.deep.equal({ settled: 50 * ONE, locked: 0 });
     expect(await chan(chanAG[0])).to.deep.equal({ settled: 40 * ONE, locked: 20 * ONE });
     expect(await avail(gateway)).to.equal(gBefore + 20 * ONE);
-    // Re-submitting the satisfied commitment yet again is refused by monotonicity at settle time
-    // only in the sense that it moves nothing; here the guard is per-batch `applied`.
-    await expectReject(settle(program, staging, [1], () => [chanAG[0].key, gateway.balance]), /RecordAlreadyApplied/);
+    // The duplicate moved nothing (monotonicity) and cannot be applied twice (per-batch `applied`).
+    await expectReject(settle(program, staging, [1], () => [chanAG[1].key, gateway.balance]), /RecordAlreadyApplied/);
     await assertSolvent();
   });
 
@@ -342,7 +377,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const badRoute: RouteRecord = routeRecord(chanAG[0], chanAG[1], 1 * ONE, 1 * ONE);
     await expectReject(tryBatch(buildRouteBatch([badRoute]), 1), /StagedRecordMismatch/);
     // (3) sealing with count larger than what was staged this batch
-    await expectReject(tryBatch(buildUnilateralBatch([uniRecord(chanAG[2], 1 * ONE)]), 2), /IncompleteBatch/);
+    await expectReject(tryBatch(buildUnilateralBatch([uniRecord(chanAG[2], 1000 * ONE)]), 2), /IncompleteBatch/);
     // the buffer is left open (nothing sealed); the next test resets it normally
   });
 
