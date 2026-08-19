@@ -42,6 +42,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
+import { partyKeypair, recordRun } from "./party-keys";
 import {
   KIND_ROUTE,
   RouteCommitment,
@@ -190,9 +191,15 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       .rpc();
     console.log(`    mint ${mint.toBase58()}`);
 
-    agents = Array.from({ length: AGENTS }, () => mkParty(Keypair.generate()));
-    gateway = mkParty(Keypair.generate());
-    providers = Array.from({ length: PROVIDERS }, () => mkParty(Keypair.generate()));
+    // Deterministic throwaway keys (recorded in ~/.ryvo-devnet-runs.json) so the SOL of an
+    // aborted run can always be swept back with scripts/sweep-runs.ts.
+    const nonce = Date.now();
+    recordRun({ nonce, parties: AGENTS + 1 + PROVIDERS, startedAt: new Date(nonce).toISOString(), note: `gateway smoke ${AGENTS}x${PROVIDERS}` });
+    let partyIndex = 0;
+    const nextParty = () => mkParty(partyKeypair(payer, nonce, partyIndex++));
+    agents = Array.from({ length: AGENTS }, nextParty);
+    gateway = nextParty();
+    providers = Array.from({ length: PROVIDERS }, nextParty);
     const all = [...agents, gateway, ...providers];
 
     // Fund SOL from the wallet (the faucet is rate limited): 8 transfers per tx.
