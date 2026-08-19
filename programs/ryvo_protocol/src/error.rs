@@ -94,4 +94,6 @@ pub enum RyvoError {
     StagedRecordMismatch,
     #[msg("Not every index below count was staged for this batch")]
     IncompleteBatch,
+    #[msg("Callback computation was not queued by this program for this circuit")]
+    ForeignComputation,
 }

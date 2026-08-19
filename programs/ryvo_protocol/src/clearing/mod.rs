@@ -608,6 +608,8 @@ fn seal_common(
     require!(s.kind == kind, RyvoError::InvalidStagingKind);
     require!(s.sealed == 0, RyvoError::StagingSealed);
     require!(count as usize >= 1 && count as usize <= batch_size(kind), RyvoError::InvalidStagingData);
+    // 0 means "no computation bound" in ClearingResult, so it is not a usable offset.
+    require!(computation_offset != 0, RyvoError::InvalidStagingData);
     // Every index below count must have been staged in this batch — never a previous batch's bytes.
     let needed: u64 = if count as usize == 64 { u64::MAX } else { (1u64 << count) - 1 };
     require!(s.staged_mask & needed == needed, RyvoError::IncompleteBatch);
@@ -774,26 +776,52 @@ pub struct ClearRoute64Callback<'info> {
 
 /// The callback must come from the computation this batch was sealed with. The Arcium program
 /// already guarantees the transaction is a genuine node callback; this guarantees it is *ours*,
-/// and current — a callback for an abandoned or earlier computation is refused.
-pub fn require_current_computation(result: &ClearingResult, computation_account: &Pubkey, mxe_account: &MXEAccount) -> Result<()> {
+/// and current.
+///
+/// Three checks, because the computation PDA is scoped to the *cluster*, not to this program:
+/// `[seed, cluster, offset]`. Another MXE on the same cluster could queue a computation at an
+/// offset we once used (after ours was closed) with a custom callback aimed at this program and
+/// our accounts, and the cluster would sign its output honestly. So: (1) the account is the PDA
+/// for the offset sealed into this batch, (2) the account says it was queued by THIS program for
+/// THIS circuit (`mxe_program_id`, `computation_definition_offset` — only our sign-PDA-gated
+/// `seal_and_queue_*` can create such an account), (3) a batch is bound at all (offset ≠ 0,
+/// count > 0). A callback for an abandoned, earlier, or foreign computation is refused.
+pub fn require_current_computation(
+    result: &ClearingResult,
+    computation_account: &AccountInfo,
+    mxe_account: &MXEAccount,
+    comp_def_offset: u32,
+) -> Result<()> {
+    require!(result.computation_offset != 0 && result.count > 0, RyvoError::StaleCallback);
     let expected = derive_comp_pda!(result.computation_offset, mxe_account);
-    require!(*computation_account == expected, RyvoError::StaleCallback);
+    require!(computation_account.key() == expected, RyvoError::StaleCallback);
+    require!(computation_account.owner == &ARCIUM_PROG_ID, RyvoError::ForeignComputation);
+    let data = computation_account.try_borrow_data()?;
+    // ComputationAccount: disc(8) | payer(32) | mxe_program_id(32) | computation_definition_offset(u32) | …
+    require!(data.len() >= 76, RyvoError::ForeignComputation);
+    let mxe_program = Pubkey::new_from_array(data[40..72].try_into().unwrap());
+    let def = u32::from_le_bytes(data[72..76].try_into().unwrap());
+    require!(mxe_program == crate::ID && def == comp_def_offset, RyvoError::ForeignComputation);
     Ok(())
+}
+
+pub const fn comp_def_offset_for(kind: u8) -> u32 {
+    if kind == KIND_ROUTE { COMP_DEF_OFFSET_CLEAR_ROUTE } else { COMP_DEF_OFFSET_CLEAR_UNILATERAL }
 }
 
 /// The computation did not produce an output. Recorded, not errored: see `ClearingResult::failed`.
 pub fn record_failure(result: &mut ClearingResult) -> Result<()> {
-    require!(!result.verified, RyvoError::BatchAlreadyCleared);
+    require!(!result.verified && !result.failed, RyvoError::BatchAlreadyCleared);
     result.failed = true;
     emit!(BatchClearingFailed { staging: result.staging, kind: result.kind });
     Ok(())
 }
 
-/// Record the verified bits. Idempotent guard: a callback may only land once per batch.
+/// Record the verified bits. A batch takes exactly one verdict: once verified or failed, nothing
+/// else is accepted (an honest computation delivers one callback; a second one is not ours).
 pub fn record_bitmap(result: &mut ClearingResult, bits: &[bool], kind: u8) -> Result<()> {
-    require!(!result.verified, RyvoError::BatchAlreadyCleared);
+    require!(!result.verified && !result.failed, RyvoError::BatchAlreadyCleared);
     require!(result.kind == kind, RyvoError::InvalidStagingKind);
-    result.failed = false;
     let mut bitmap = [0u8; 8];
     let mut set = 0u16;
     for (i, b) in bits.iter().enumerate() {

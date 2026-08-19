@@ -212,8 +212,9 @@ pub mod ryvo_protocol {
     ) -> Result<()> {
         clearing::require_current_computation(
             &ctx.accounts.clearing_result,
-            &ctx.accounts.computation_account.key(),
+            &ctx.accounts.computation_account.to_account_info(),
             &ctx.accounts.mxe_account,
+            clearing::comp_def_offset_for(KIND_UNILATERAL),
         )?;
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
@@ -235,8 +236,9 @@ pub mod ryvo_protocol {
     ) -> Result<()> {
         clearing::require_current_computation(
             &ctx.accounts.clearing_result,
-            &ctx.accounts.computation_account.key(),
+            &ctx.accounts.computation_account.to_account_info(),
             &ctx.accounts.mxe_account,
+            clearing::comp_def_offset_for(KIND_ROUTE),
         )?;
         if let SignedComputationOutputs::Failure(_) = output {
             return clearing::record_failure(&mut ctx.accounts.clearing_result);
