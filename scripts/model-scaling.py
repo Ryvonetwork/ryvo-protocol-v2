@@ -40,7 +40,11 @@ def ceil(a, b):
 
 def ryvo(n_records, N, kind, tx_bytes, mode, reuse, settle_per_tx):
     batches = ceil(n_records, N)
-    if mode == "prev":   # slot staging of ids/sigs (8 slots/route, 4/uni, 30 per tx, tail merged) + stage_channels (30 accounts/tx)
+    if mode == "offchain":   # hypothetical: Arcium reads ids/targets/keys/sigs off-chain; nothing is staged.
+        # settle_channels then carries ids+targets (32 B/route, 16 B/unilateral) as instruction data and the
+        # circuit's revealed digest binds them to what was verified; settle_per_tx already reflects that.
+        stage_tx = 0
+    elif mode == "prev":   # slot staging of ids/sigs (8 slots/route, 4/uni, 30 per tx, tail merged) + stage_channels (30 accounts/tx)
         slots = N * (8 if kind == "route" else 4)
         stage_tx = ceil(slots, 30) - 1 + ceil(N * (2 if kind == "route" else 1), 30)   # measured: 8 + 3 = 11
     elif mode == "dense":
@@ -92,6 +96,10 @@ for kind, base_settlements in (("route", 2), ("unilateral", 1)):
         ("NOW: N=64, dense records, on-chain padding (measured)",                  64, LEGACY_TX_BYTES, "dense", True, settle_per),
         ("NOW + transaction v1 (client ready; gate pending)",                       64, V1_TX_BYTES, "dense", True, settle_per),
         ("NOW + v1 + 128 account locks (whole batch settles in one tx)",            64, V1_TX_BYTES, "dense", True, 64),
+        # hypothetical: Arcium sources inputs off-chain (no staging at all); settle carries ids+targets as data
+        ("OFF-CHAIN INPUTS, legacy tx, 64 locks, N=64",                             64, LEGACY_TX_BYTES, "offchain", True, 28 if kind == "route" else 54),
+        ("OFF-CHAIN INPUTS + v1 + 128 locks, N=64",                                 64, V1_TX_BYTES, "offchain", True, 64),
+        ("OFF-CHAIN INPUTS + v1 + 128 locks, N=256 (32-byte bitmap, bigger circuit)", 256, V1_TX_BYTES, "offchain", True, 103 if kind == "route" else 122),
     ]
     for label, N, txb, mode, reuse, sp in configs:
         tx, cu, per_batch, batches = ryvo(N_REC, N, kind, txb, mode, reuse, sp)
