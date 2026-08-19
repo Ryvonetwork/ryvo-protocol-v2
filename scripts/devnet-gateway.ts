@@ -56,7 +56,7 @@ import {
   bitmapBits,
   buildRouteBatch,
   clearingPda,
-  closeStaging,
+  claimComputationRentIx,
   ensureArciumSigner,
   ensureCompDef,
   openStaging,
@@ -144,6 +144,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   const routeOf: { ag: number; gp: number; targetAg: number; targetGp: number; increment: number }[] = [];
   /** The relayer's single reusable staging buffer. */
   let staging: PublicKey;
+  /** The previous batch's computation; its rent comes back in the next batch's first tx. */
+  let lastComputation: anchor.BN | undefined;
   const batches: { first: number; count: number; bits: boolean[] }[] = [];
   const stats = { tx: { setup: 0, stage: 0, queue: 0, callback: 0, settle: 0 }, solStart: 0, t: {} as Record<string, number> };
   const startedAt = Date.now();
@@ -286,9 +288,10 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     for (let first = 0, k = 0; first < records.length; first += N_ROUTE, k++) {
       const batch = records.slice(first, first + N_ROUTE);
       const t1 = Date.now();
-      const { tailIx, txCount } = await stageBatch(program, payer, staging, KIND_ROUTE, buildRouteBatch(batch), { fresh: k === 0 });
+      const { tailIx, txCount } = await stageBatch(program, payer, staging, KIND_ROUTE, buildRouteBatch(batch), { fresh: k === 0, reclaim: lastComputation });
       stats.tx.stage += txCount;
       const { computationOffset, clearingResult } = await sealAndQueue(program, payer, staging, KIND_ROUTE, batch.length, tailIx);
+      lastComputation = computationOffset;
       stats.tx.queue++;
       await awaitClearing(provider, program, computationOffset);
       const r = await program.account.clearingResult.fetch(clearingResult);
@@ -374,7 +377,11 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     expect(vaultAcc.amount.toString()).to.equal((sumAvail + sumLocked).toString());
     console.log(`    providers paid ${expProvider.reduce((a, b) => a + b, 0) / ONE}, gateway fees ${expFee.reduce((a, b) => a + b, 0) / ONE}, vault ${Number(vaultAcc.amount) / ONE} == available ${Number(sumAvail) / ONE} + locked ${Number(sumLocked) / ONE}`);
 
-    await closeStaging(program, payer, staging);
+    // last computation's rent + the buffer's rent come back in one tx
+    const closeIxs = lastComputation ? [await claimComputationRentIx(program, payer.publicKey, lastComputation)] : [];
+    await program.methods.closeStaging()
+      .accounts({ relayer: payer.publicKey, staging, clearingResult: clearingPda(program.programId, staging) })
+      .preInstructions(closeIxs).signers([payer]).rpc({ commitment: "confirmed" });
     // Sweep the parties' unspent SOL back (their keypairs are throwaway); rent stays parked.
     const parties = [...agents, gateway, ...providers];
     let swept = 0;

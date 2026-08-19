@@ -88,6 +88,8 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   /** The relayer's one reusable staging buffer, opened in `before`, closed at the end. */
   let staging: PublicKey;
   let firstBatch = true;
+  /** The previous batch's computation; its rent is reclaimed in the next batch's first tx. */
+  let lastComputation: anchor.BN | undefined;
 
   async function makeParty(deposit = 0): Promise<Party> {
     const owner = Keypair.generate();
@@ -178,9 +180,10 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   /** Stage into the shared buffer (resetting it) + queue + wait; returns the bitmap. */
   async function clear(kind: number, batch: Batch, count: number) {
     const t0 = Date.now();
-    const { tailIx, txCount } = await stageBatch(program, relayer, staging, kind, batch, { fresh: firstBatch });
+    const { tailIx, txCount } = await stageBatch(program, relayer, staging, kind, batch, { fresh: firstBatch, reclaim: lastComputation });
     firstBatch = false;
     const { computationOffset, clearingResult } = await sealAndQueue(program, relayer, staging, kind, count, tailIx);
+    lastComputation = computationOffset;
     await awaitClearing(provider, program, computationOffset);
     const r = await program.account.clearingResult.fetch(clearingResult);
     console.log(`      [clear] kind=${kind} count=${count} verified=${r.verified} bits=${JSON.stringify(bitmapBits(r.bitmap as number[], count))} staging tx=${txCount + 1}${tailIx ? " (tail merged into seal)" : ""} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);

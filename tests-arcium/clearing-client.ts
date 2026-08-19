@@ -21,7 +21,6 @@ import {
   getCompDefAccOffset,
   getArciumAccountBaseSeed,
   getArciumProgramId,
-  getArciumProgram,
   uploadCircuit,
   getMXEAccAddress,
   getMempoolAccAddress,
@@ -30,6 +29,7 @@ import {
   getComputationAccAddress,
   getClusterAccAddress,
   getLookupTableAddress,
+  getArciumProgram,
 } from "@arcium-hq/client";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import {
@@ -197,10 +197,24 @@ export async function openStaging(program: Program<RyvoProtocol>, relayer: Keypa
 }
 
 /**
+ * Arcium's `claim_computation_rent`: the queue tx funds a ~560-byte computation account
+ * (~0.0048 SOL); once the computation has finished, the payer gets that rent back with this.
+ */
+export async function claimComputationRentIx(program: Program<RyvoProtocol>, payer: PublicKey, computationOffset: anchor.BN): Promise<TransactionInstruction> {
+  const { env } = arciumEnv();
+  return getArciumProgram(program.provider as anchor.AnchorProvider).methods
+    .claimComputationRent(computationOffset, env.arciumClusterOffset)
+    .accountsPartial({ signer: payer, comp: getComputationAccAddress(env.arciumClusterOffset, computationOffset) })
+    .instruction();
+}
+
+/**
  * Stage a batch into an existing buffer. The first transaction carries `reset_staging` (which
  * requires the previous batch to be fully settled) unless `fresh` says the buffer was just
- * opened. Returns the last chunk *unsent* when it is small enough to ride along with
- * `seal_and_queue` in one transaction; pass it to `sealAndQueue` as `tailIx`.
+ * opened; pass the previous batch's computation offset as `reclaim` and the same transaction
+ * also claims that computation account's rent back. Returns the last chunk *unsent* when it is
+ * small enough to ride along with `seal_and_queue` in one transaction; pass it to `sealAndQueue`
+ * as `tailIx`.
  */
 export async function stageBatch(
   program: Program<RyvoProtocol>,
@@ -208,7 +222,7 @@ export async function stageBatch(
   staging: PublicKey,
   kind: number,
   batch: Batch,
-  opts: { fresh?: boolean } = {},
+  opts: { fresh?: boolean; reclaim?: anchor.BN } = {},
 ): Promise<{ tailIx?: TransactionInstruction; txCount: number }> {
   const { slots } = batch;
   const total = slots.length / SLOT;
@@ -259,6 +273,12 @@ export async function stageBatch(
     if (first) await send(ixs); else sends.push(send(ixs));
     first = false;
     s += n;
+  }
+  // the previous computation's rent claim rides in the smallest channel tx (the remainder one)
+  if (opts.reclaim) {
+    const claim = await claimComputationRentIx(program, relayer.publicKey, opts.reclaim);
+    const smallest = channelTxs.reduce((a, b) => (a.reduce((n, ix) => n + ix.keys.length, 0) <= b.reduce((n, ix) => n + ix.keys.length, 0) ? a : b));
+    if (smallest.reduce((n, ix) => n + ix.keys.length, 0) <= 24) smallest.push(claim); else channelTxs.push([claim]);
   }
   for (const ixs of channelTxs) sends.push(send(ixs));
   await Promise.all(sends);

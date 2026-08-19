@@ -19,7 +19,9 @@ MERGEABLE_TAIL = 18           # a stage chunk this small rides in the seal_and_q
 CHANNELS_PER_LEGACY_TX = 30   # stage_channels: ~31 accounts fit a legacy tx
 CHANNELS_PER_V1_TX = 90       # three stage_channels calls per v1 tx
 
-# measured on devnet
+# measured on devnet (scripts/devnet-costs.ts, scripts/seal-tx-detail.ts, 2026-08-19)
+ARCIUM_FEE_LAMPORTS = 10_023                # paid to the Arcium fee pool per computation (devnet price; route batch = 23.18M ACU)
+COMPUTATION_RENT_LAMPORTS = 4_802_400       # 562-byte computation account; reclaimed by claim_computation_rent (folded into the next batch's tx)
 SETTLE_CU_PER_ROUTE = 142_519 / 32          # 4,454 (32 routes, 98 accounts, one v0 tx)
 SETTLE_ROUTES_PER_TX = 32                   # 98 accounts, ALT; measured
 SETTLE_UNI_PER_TX = 100                     # est: 1 channel each + shared payee balance, ~126 locks
@@ -51,19 +53,20 @@ def ryvo(n_records, N, data_slots_per_record, channels_per_record, slots_per_tx,
         cu_batch = OPEN_TX_CU + stage_tx * STAGE_TX_CU + QUEUE_TX_CU + CLOSE_TX_CU
     tx = batches * per_batch_tx
     cu = batches * cu_batch + n_records * (SETTLE_CU_PER_ROUTE if kind == "route" else SETTLE_CU_PER_ROUTE * 0.66)
-    return tx, cu, per_batch_tx
+    return tx, cu, per_batch_tx, batches
 
-def usd(tx, cu, prio_lam_per_cu):
-    return (tx * BASE_FEE + cu * prio_lam_per_cu) / 1e9 * SOL_USD
+def usd(tx, cu, prio_lam_per_cu, batches=0):
+    return (tx * BASE_FEE + cu * prio_lam_per_cu + batches * ARCIUM_FEE_LAMPORTS) / 1e9 * SOL_USD
 
-def row(label, tx, cu, base_tx, base_cu):
+def row(label, tx, cu, base_tx, base_cu, batches):
     out = f"| {label:<84} | {tx:>6,} | {cu/1e6:>6.2f}M |"
     for p in (0, 0.01, 1):
-        out += f" {usd(tx, cu, p):>7.4f} ({usd(base_tx, base_cu, p)/usd(tx, cu, p):>4.1f}×) |"
+        out += f" {usd(tx, cu, p, batches):>7.4f} ({usd(base_tx, base_cu, p)/usd(tx, cu, p, batches):>4.1f}×) |"
     return out
 
 N_REC = 1000
-print(f"Per {N_REC:,} channel settlements. Ratio in parentheses = 1:1 cost / Ryvo cost.")
+print(f"Per {N_REC:,} channel settlements. Ratio in parentheses = 1:1 cost / Ryvo cost. USD at SOL ${SOL_USD:.0f}.")
+print("Ryvo columns include the Arcium computation fee (devnet price); computation-account rent is reclaimed, so excluded.")
 print("Priority fee columns: none | 0.01 lamport/CU (moderate) | 1 lamport/CU (heavy)\n")
 for kind, base_settlements in (("route", 2), ("unilateral", 1)):
     print(f"### {kind} ({'2 channel settlements per route' if kind=='route' else '1 channel settlement'})")
@@ -84,6 +87,6 @@ for kind, base_settlements in (("route", 2), ("unilateral", 1)):
         ("NOW + v1 + N=64 for routes too (circuit rebuild; bitmap already holds 64)",                 64,    spr_now,   cpr, V1_SLOTS_PER_TX,     True),
     ]
     for label, N, spr, c, sptx, reuse in configs:
-        tx, cu, per_batch = ryvo(N_REC, N, spr, c, sptx, settle_per, kind, reuse)
-        print(row(f"{label} [{per_batch} tx/batch]", tx, cu, b_tx, b_cu))
+        tx, cu, per_batch, batches = ryvo(N_REC, N, spr, c, sptx, settle_per, kind, reuse)
+        print(row(f"{label} [{per_batch} tx/batch]", tx, cu, b_tx, b_cu, batches))
     print()
