@@ -10,7 +10,7 @@ import * as fs from "fs";
 import * as os from "os";
 
 const PROGRAM_ID = new PublicKey("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii");
-const CLEARING = ["ResetStaging", "StageSlots", "StageChannels", "SealAndQueueRoute", "SealAndQueueUnilateral", "SettleChannels", "OpenStaging", "CloseStaging"];
+const CLEARING = ["ResetStaging", "StageRecords", "StageSlots", "StageChannels", "SealAndQueueRoute", "SealAndQueueUnilateral", "SettleChannels", "OpenStaging", "CloseStaging"];
 
 (async () => {
   const connection = new Connection(process.env.ANCHOR_PROVIDER_URL!, "confirmed");
@@ -56,6 +56,8 @@ const CLEARING = ["ResetStaging", "StageSlots", "StageChannels", "SealAndQueueRo
       // primary label: the most specific instruction in the tx
       const label = mine.includes("SealAndQueueRoute") ? "seal_and_queue (+tail stage_slots)"
         : mine.includes("SettleChannels") ? "settle_channels"
+        : mine.includes("StageRecords") && mine.includes("ResetStaging") ? "stage_records (+reset_staging)"
+        : mine.includes("StageRecords") ? "stage_records"
         : mine.includes("StageChannels") ? "stage_channels"
         : mine.includes("ResetStaging") ? "stage_slots (+reset_staging)"
         : mine.includes("StageSlots") ? "stage_slots"

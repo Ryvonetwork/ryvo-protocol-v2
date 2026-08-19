@@ -22,14 +22,15 @@ TX_OVERHEAD = 217             # signature, header, 3 fixed accounts, blockhash, 
 def records_per_tx(wire, tx_bytes, extra=0):
     return (tx_bytes - TX_OVERHEAD - extra) // wire
 
-# measured on devnet 2026-08-19 (scripts/devnet-costs.ts, scripts/seal-tx-detail.ts)
-ARCIUM_FEE_LAMPORTS = 10_023                # paid to the Arcium fee pool per computation (devnet price; 32-route batch = 23.18M ACU)
-COMPUTATION_RENT_LAMPORTS = 4_802_400       # 562-byte computation account; reclaimed in-flow by claim_computation_rent
-SETTLE_CU_PER_ROUTE = 142_519 / 32          # 4,454 (32 routes, 98 accounts, one v0 tx)
-SETTLE_ROUTES_PER_TX = 64                   # one full N=64 batch per v0 tx (~190 accounts via ALT; est. 285k CU)
-SETTLE_UNI_PER_TX = 100                     # est
-STAGE_TX_CU = 12_000                        # est: 4 routes packed on-chain (2 Channel reads each)
-QUEUE_TX_CU = 140_000                       # measured 137–143k (seal + Arcium CPI)
+# measured on devnet 2026-08-19 with the N=64 dense build (scripts/devnet-costs.ts, scripts/seal-tx-detail.ts):
+# 100 routes = 2 batches = 32 wallet tx + 2 callbacks; 64-route batch = 16 stage + seal + callback + 2 settle = 20 tx
+ARCIUM_FEE_LAMPORTS = 10_045                # paid to the Arcium fee pool per computation (devnet price; 64-route batch; 32-route was 10,023)
+COMPUTATION_RENT_LAMPORTS = 5_679_360       # 678-byte computation account; reclaimed in the next seal tx (net zero in steady state)
+SETTLE_CU_PER_ROUTE = 171_363 / 39          # 4,394 (39 routes, 64 unique accounts, one v0 tx)
+SETTLE_ROUTES_PER_TX = 39                   # tx account-lock limit is 64 (the 128 feature is inactive on devnet and mainnet): 39 agent channels + 10 gateway channels + 10 balances + 5
+SETTLE_UNI_PER_TX = 58                      # 58 channels + 1 shared payee balance + 5 (lock limit)
+STAGE_TX_CU = 10_232                        # measured: 4 routes packed on-chain per tx
+QUEUE_TX_CU = 177_007                       # measured (seal + pad + Arcium CPI, N=64)
 OPEN_TX_CU = 12_000                         # est
 CLOSE_TX_CU = 6_000                         # est
 ONE_TO_ONE_CU = 15_000                      # est: one channel settlement tx with a sig check + 2 writes
@@ -88,7 +89,7 @@ for kind, base_settlements in (("route", 2), ("unilateral", 1)):
     configs = [
         ("first deployment: N=32, slot staging, keys staged, open/close per batch", 32, LEGACY_TX_BYTES, "first", False, 32),
         ("previous: N=64 uni / 32 route, keys copied on-chain, buffer reuse",       32 if kind == "route" else 64, LEGACY_TX_BYTES, "prev", True, 32),
-        ("NOW: N=64, dense records, on-chain padding, one settle tx per batch",    64, LEGACY_TX_BYTES, "dense", True, settle_per),
+        ("NOW: N=64, dense records, on-chain padding (measured)",                  64, LEGACY_TX_BYTES, "dense", True, settle_per),
         ("NOW + transaction v1 (client ready; gate pending)",                       64, V1_TX_BYTES, "dense", True, settle_per),
     ]
     for label, N, txb, mode, reuse, sp in configs:

@@ -316,7 +316,11 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     stats.t.clear = Date.now() - t0;
   });
 
-  /** One v0 tx per SETTLE_PER_TX routes through the lookup table (a full N=64 batch fits one tx). */
+  /** Settle through the lookup table in v0 transactions, each under the 64-account-lock limit (the
+   *  128-lock feature is inactive on devnet AND mainnet as of 2026-08-19): a route adds its agent
+   *  channel plus a gateway channel and a provider balance shared with every other route to that
+   *  provider, so ~39 routes per tx with 10 providers. */
+  const MAX_TX_ACCOUNTS = 64;
   const SETTLE_PER_TX = Number(process.env.RYVO_SETTLE_PER_TX ?? 64);
   let table: Awaited<ReturnType<typeof connection.getAddressLookupTable>>["value"] | null = null;
   async function ensureLookupTable() {
@@ -334,10 +338,26 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     console.log(`    lookup table ${lut.toBase58()} with ${table!.state.addresses.length} addresses`);
     return table!;
   }
+  /** Split a batch into settle transactions of at most MAX_TX_ACCOUNTS unique accounts. */
+  function settleChunks(b: { first: number; count: number }): number[][] {
+    const fixed = 5; // payer, program, compute budget program, staging, clearing result
+    const chunks: number[][] = [];
+    let cur: number[] = [];
+    let uniq = new Set<string>();
+    for (let i = 0; i < b.count; i++) {
+      const r = routeOf[b.first + i];
+      const keys = [chanAG[r.ag].key, chanGP[r.gp].key, providers[r.gp].balance].map((k) => k.toBase58());
+      const next = new Set([...uniq, ...keys]);
+      if (cur.length && (next.size + fixed > MAX_TX_ACCOUNTS || cur.length >= SETTLE_PER_TX)) { chunks.push(cur); cur = []; uniq = new Set(); }
+      keys.forEach((k) => uniq.add(k));
+      cur.push(i);
+    }
+    if (cur.length) chunks.push(cur);
+    return chunks;
+  }
   async function settleBatch(b: { first: number; count: number }) {
     const t = await ensureLookupTable();
-    for (let start = 0; start < b.count; start += SETTLE_PER_TX) {
-      const indices = Array.from({ length: Math.min(SETTLE_PER_TX, b.count - start) }, (_, i) => start + i);
+    for (const indices of settleChunks(b)) {
       const remaining = indices.flatMap((i) => {
         const r = routeOf[b.first + i];
         return [chanAG[r.ag].key, chanGP[r.gp].key, providers[r.gp].balance].map((pubkey) => ({ pubkey, isWritable: true, isSigner: false }));
@@ -353,7 +373,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const sig = await retry(() => connection.sendTransaction(vtx, { maxRetries: 3 }), 3, "settle");
       await connection.confirmTransaction(sig, "confirmed");
       const got = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0 });
-      console.log(`    settled ${indices.length} routes in one tx: ${got?.meta?.computeUnitsConsumed} CU, ${remaining.length + 2} accounts`);
+      console.log(`    settled ${indices.length} routes in one tx: ${got?.meta?.computeUnitsConsumed} CU, ${got?.transaction.message.getAccountKeys({ addressLookupTableAccounts: [t!] }).length} unique accounts`);
       stats.tx.settle++;
     }
   }

@@ -222,11 +222,23 @@ async function planStaging(
   opts: { fresh?: boolean; reclaim?: anchor.BN },
   useV1: boolean,
 ): Promise<StagingPlan> {
-  const stageIx = (start: number, recs: Batch["records"]) => program.methods
-    .stageRecords(start, Buffer.concat(recs.map((r) => r.data)))
-    .accounts({ relayer: relayer.publicKey, staging })
-    .remainingAccounts(recs.flatMap((r) => r.channels.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }))))
-    .instruction();
+  // Built by hand: Anchor's instruction encoder caps data at 1,000 bytes, and a v1 chunk is bigger.
+  const disc = Buffer.from((program.idl.instructions.find((i) => i.name === "stage_records" || i.name === "stageRecords") as any).discriminator);
+  const stageIx = async (start: number, recs: Batch["records"]) => {
+    const body = Buffer.concat(recs.map((r) => r.data));
+    const head = Buffer.alloc(2 + 4);
+    head.writeUInt16LE(start, 0);
+    head.writeUInt32LE(body.length, 2);
+    return new TransactionInstruction({
+      programId: program.programId,
+      keys: [
+        { pubkey: relayer.publicKey, isSigner: true, isWritable: false },
+        { pubkey: staging, isSigner: false, isWritable: true },
+        ...recs.flatMap((r) => r.channels.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }))),
+      ],
+      data: Buffer.concat([disc, head, body]),
+    });
+  };
   const resetIx = opts.fresh ? undefined : await program.methods.resetStaging(batch.kind)
     .accounts({ relayer: relayer.publicKey, staging, clearingResult: clearingPda(program.programId, staging) })
     .instruction();
