@@ -69,10 +69,11 @@ import {
 
 // ------------------------------------------------------------------ configuration
 const RPC = process.env.ANCHOR_PROVIDER_URL ?? "https://api.devnet.solana.com";
+const RPC_DISPLAY = RPC.replace(/([?&]api-key=)[^&]+/i, "$1<redacted>");
 const CLUSTER_OFFSET = Number(process.env.ARCIUM_CLUSTER_OFFSET ?? 456);
 const CIRCUIT_BASE_URL =
   process.env.RYVO_CIRCUIT_BASE_URL ??
-  "https://raw.githubusercontent.com/Ryvonetwork/ryvo-protocol-v2/master/circuits";
+  "https://raw.githubusercontent.com/Ryvonetwork/ryvo-protocol-v2/03d81142aedf859515aabf688226b8eea4e3b71f/circuits";
 const DEVNET_CHAIN_ID = 1;
 const CHANNEL_TIMELOCK = 10;
 const AGENTS = Number(process.env.RYVO_AGENTS ?? 100);
@@ -243,7 +244,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   before(async () => {
     stats.solStart = await connection.getBalance(payer.publicKey);
     console.log(
-      `    program ${programId.toBase58()} | rpc ${RPC} | cluster ${CLUSTER_OFFSET} | wallet ${payer.publicKey.toBase58()} (${(
+      `    program ${programId.toBase58()} | rpc ${RPC_DISPLAY} | cluster ${CLUSTER_OFFSET} | wallet ${payer.publicKey.toBase58()} (${(
         stats.solStart / 1e9
       ).toFixed(3)} SOL)`
     );
