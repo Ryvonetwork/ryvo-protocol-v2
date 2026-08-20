@@ -601,21 +601,72 @@ export function bitmapBits(bitmap: number[], count: number): boolean[] {
   );
 }
 
-async function settlementInstruction(
+export async function settlementInstruction(
   program: Program<RyvoProtocol>,
   staging: PublicKey,
   indices: number[],
   accountsFor: (i: number) => PublicKey[]
 ): Promise<TransactionInstruction> {
-  const remaining: AccountMeta[] = indices.flatMap((i) =>
-    accountsFor(i).map((pubkey) => ({
-      pubkey,
-      isWritable: true,
-      isSigner: false,
-    }))
-  );
+  const uniqueAccounts: PublicKey[] = [];
+  const accountNumbers = new Map<string, number>();
+  const accountNumber = (pubkey: PublicKey): number => {
+    const key = pubkey.toBase58();
+    const existing = accountNumbers.get(key);
+    if (existing !== undefined) return existing;
+    if (uniqueAccounts.length >= 256)
+      throw new Error("settlement has more than 256 unique accounts");
+    const next = uniqueAccounts.length;
+    uniqueAccounts.push(pubkey);
+    accountNumbers.set(key, next);
+    return next;
+  };
+  const groups = new Map<
+    string,
+    {
+      sourceBucketAccount: number;
+      primaryBalanceAccount: number;
+      commitmentIndices: number[];
+      providerBalanceAccounts: number[];
+    }
+  >();
+  for (const index of indices) {
+    if (index < 0 || index > 255)
+      throw new Error(`invalid commitment index ${index}`);
+    const accounts = accountsFor(index);
+    if (accounts.length < 2)
+      throw new Error(`commitment ${index} needs a bucket and primary balance`);
+    const sourceBucketAccount = accountNumber(accounts[0]);
+    const primaryBalanceAccount = accountNumber(accounts[1]);
+    const groupKey = `${sourceBucketAccount}:${primaryBalanceAccount}`;
+    let group = groups.get(groupKey);
+    if (!group) {
+      group = {
+        sourceBucketAccount,
+        primaryBalanceAccount,
+        commitmentIndices: [],
+        providerBalanceAccounts: [],
+      };
+      groups.set(groupKey, group);
+    }
+    group.commitmentIndices.push(index);
+    group.providerBalanceAccounts.push(
+      ...accounts.slice(2).map(accountNumber)
+    );
+  }
+  const remaining: AccountMeta[] = uniqueAccounts.map((pubkey) => ({
+    pubkey,
+    isWritable: true,
+    isSigner: false,
+  }));
   return program.methods
-    .settleChannels(Buffer.from(indices))
+    .settleChannels(
+      [...groups.values()].map((group) => ({
+        sourceBucketAccount: group.sourceBucketAccount,
+        primaryBalanceAccount: group.primaryBalanceAccount,
+        commitmentIndices: Buffer.from(group.commitmentIndices),
+        providerBalanceAccounts: Buffer.from(group.providerBalanceAccounts),
+      }))
+    )
     .accounts({
       staging,
       clearingResult: clearingPda(program.programId, staging),
@@ -625,9 +676,9 @@ async function settlementInstruction(
 }
 
 /**
- * settle_channels for a set of indices. `accountsFor(i)` returns the per-commitment accounts in
- * the order the program expects (unilateral: [sourceBucket, payeeBalance]; route:
- * [sourceBucket, gatewayBalance, providerBalance x allocation count]).
+ * Settle a set of commitments. `accountsFor(i)` returns the logical accounts in commitment
+ * order; this helper deduplicates them and groups commitments that share a bucket and primary
+ * balance before building the instruction.
  */
 export async function settle(
   program: Program<RyvoProtocol>,

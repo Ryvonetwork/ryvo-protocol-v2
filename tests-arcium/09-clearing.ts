@@ -930,6 +930,13 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     expect(
       await clear(KIND_UNILATERAL, buildUnilateralBatch(records), N_UNI)
     ).to.deep.equal(new Array(N_UNI).fill(true));
+    await expectReject(
+      settle(program, staging, [0, 0], () => [
+        channels[0].key,
+        gateway.balance,
+      ]),
+      /RecordAlreadyApplied/
+    );
     const metrics = await settleMeasured(
       program,
       staging,
@@ -940,6 +947,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       `    64 direct: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
     );
     expect(metrics.legacyBytes).to.be.at.most(1232);
+    expect(metrics.uniqueAccounts).to.be.at.most(7);
     expect(metrics.computeUnits).to.be.greaterThan(0);
     expect(metrics.computeUnits).to.be.at.most(1_400_000);
     for (const channel of channels) {
@@ -974,6 +982,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       `    16 providers: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
     );
     expect(metrics.legacyBytes).to.be.at.most(1232);
+    expect(metrics.uniqueAccounts).to.be.at.most(23);
     expect(metrics.computeUnits).to.be.greaterThan(0);
     expect(metrics.computeUnits).to.be.at.most(1_400_000);
     expect(await channelState(routedAG)).to.deep.equal({
@@ -1017,6 +1026,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       `    32 routed: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
     );
     expect(metrics.legacyBytes).to.be.at.most(1232);
+    expect(metrics.uniqueAccounts).to.be.at.most(23);
     expect(metrics.computeUnits).to.be.greaterThan(0);
     expect(metrics.computeUnits).to.be.at.most(1_400_000);
     for (const channel of channels) {

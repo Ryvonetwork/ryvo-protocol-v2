@@ -1181,6 +1181,18 @@ pub fn record_bitmap(result: &mut ClearingResult, bits: &[bool], kind: u8) -> Re
 // Settlement
 // ============================================================================================
 
+/// A compact settlement plan for commitments that share one source bucket and one primary
+/// balance (the direct payee or routed gateway). Account numbers index the instruction's unique
+/// `remaining_accounts` table. Routed provider account numbers are flattened in commitment and
+/// allocation order; direct groups leave that vector empty.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SettlementGroup {
+    pub source_bucket_account: u8,
+    pub primary_balance_account: u8,
+    pub commitment_indices: Vec<u8>,
+    pub provider_balance_accounts: Vec<u8>,
+}
+
 #[derive(Accounts)]
 pub struct SettleChannels<'info> {
     pub staging: AccountLoader<'info, StagingBuffer>,
@@ -1191,9 +1203,7 @@ pub struct SettleChannels<'info> {
         has_one = staging,
     )]
     pub clearing_result: Box<Account<'info, ClearingResult>>,
-    // remaining_accounts: per index, in order —
-    //   unilateral: [source_bucket (mut), payee_balance (mut)]
-    //   route:      [source_bucket (mut), gateway_balance (mut), provider_balance (mut) x count]
+    // remaining_accounts: one writable entry per unique bucket or balance named by `groups`.
 }
 
 /// Move funds for the listed commitments. Anyone may call it; a wrong or missing account simply
@@ -1201,7 +1211,7 @@ pub struct SettleChannels<'info> {
 /// or nothing locked) is skipped rather than failing the batch.
 pub fn settle_channels_handler<'info>(
     ctx: Context<'info, SettleChannels<'info>>,
-    indices: Vec<u8>,
+    groups: Vec<SettlementGroup>,
 ) -> Result<()> {
     let result = &mut ctx.accounts.clearing_result;
     require!(result.verified, RyvoError::BatchNotCleared);
@@ -1211,46 +1221,41 @@ pub fn settle_channels_handler<'info>(
         RyvoError::InvalidStagingKind
     );
     let kind = staging.kind;
-    let mut account_cursor = 0usize;
-    for &idx in &indices {
-        let i = idx as usize;
-        require!(i < result.count as usize, RyvoError::InvalidSettlementIndex);
-        require!(bit(&result.bitmap, i), RyvoError::RecordNotVerified);
-        require!(!bit(&result.applied, i), RyvoError::RecordAlreadyApplied);
-        let account_count = match kind {
-            KIND_UNILATERAL => 2,
-            KIND_ROUTE => {
-                let (_, count) = unpack_pair(staged_u128(&staging, RT_COL_TARGET_COUNT, i));
-                require!(
-                    count >= 1 && count <= MAX_ROUTE_ALLOCATIONS as u64,
-                    RyvoError::InvalidRouteAllocations
-                );
-                2usize
-                    .checked_add(count as usize)
-                    .ok_or(RyvoError::MathOverflow)?
-            }
-            _ => return Err(RyvoError::InvalidStagingKind.into()),
-        };
-        let end = account_cursor
-            .checked_add(account_count)
-            .ok_or(RyvoError::MathOverflow)?;
+    require!(!groups.is_empty(), RyvoError::InvalidSettlementIndex);
+
+    // Validate the complete plan before moving money. In particular, the same commitment cannot
+    // appear twice in one instruction and be paid twice before its applied bit is written.
+    let mut seen = [0u8; (MAX_CLEARING_COMMITMENTS / 8) as usize];
+    for group in &groups {
         require!(
-            end <= ctx.remaining_accounts.len(),
+            !group.commitment_indices.is_empty(),
+            RyvoError::InvalidSettlementIndex
+        );
+        require!(
+            (group.source_bucket_account as usize) < ctx.remaining_accounts.len()
+                && (group.primary_balance_account as usize) < ctx.remaining_accounts.len(),
             RyvoError::InvalidSettlementAccounts
         );
-        let accs = &ctx.remaining_accounts[account_cursor..end];
-        match kind {
-            KIND_UNILATERAL => settle_unilateral(&staging, i, accs)?,
-            KIND_ROUTE => settle_route(&staging, i, accs)?,
-            _ => unreachable!(),
+        for &idx in &group.commitment_indices {
+            let i = idx as usize;
+            require!(i < result.count as usize, RyvoError::InvalidSettlementIndex);
+            require!(bit(&result.bitmap, i), RyvoError::RecordNotVerified);
+            require!(!bit(&result.applied, i), RyvoError::RecordAlreadyApplied);
+            require!(!bit(&seen, i), RyvoError::RecordAlreadyApplied);
+            set_bit(&mut seen, i);
         }
-        account_cursor = end;
-        set_bit(&mut result.applied, i);
     }
-    require!(
-        account_cursor == ctx.remaining_accounts.len(),
-        RyvoError::InvalidSettlementAccounts
-    );
+
+    for group in &groups {
+        match kind {
+            KIND_UNILATERAL => settle_unilateral_group(&staging, group, ctx.remaining_accounts)?,
+            KIND_ROUTE => settle_route_group(&staging, group, ctx.remaining_accounts)?,
+            _ => return Err(RyvoError::InvalidStagingKind.into()),
+        }
+        for &idx in &group.commitment_indices {
+            set_bit(&mut result.applied, idx as usize);
+        }
+    }
     Ok(())
 }
 
@@ -1273,94 +1278,125 @@ fn payable(target: u64, settled: u64, locked: u64) -> u64 {
     target.saturating_sub(settled).min(locked)
 }
 
-fn settle_unilateral<'info>(
-    staging: &StagingBuffer,
-    i: usize,
-    accs: &'info [AccountInfo<'info>],
-) -> Result<()> {
-    let (channel_id, target) = unpack_pair(staged_u128(staging, UNI_COL_IDS, i));
-    let staged_bucket = staged_pubkey(staging, UNI_COL_BUCKET, i);
+fn account_at<'info>(
+    accounts: &'info [AccountInfo<'info>],
+    index: u8,
+) -> Result<&'info AccountInfo<'info>> {
+    accounts
+        .get(index as usize)
+        .ok_or_else(|| RyvoError::InvalidSettlementAccounts.into())
+}
 
-    // The circuit verified the signature under the key stored in this bucket slot. Settlement
-    // rebinds the signed channel id to the same bucket and occupied slot.
+fn settle_unilateral_group<'info>(
+    staging: &StagingBuffer,
+    group: &SettlementGroup,
+    accounts: &'info [AccountInfo<'info>],
+) -> Result<()> {
     require!(
-        accs[0].key() == staged_bucket,
-        RyvoError::SettlementChannelMismatch
+        group.provider_balance_accounts.is_empty(),
+        RyvoError::InvalidSettlementAccounts
     );
-    require!(accs[0].is_writable, RyvoError::InvalidSettlementAccounts);
-    let bucket_loader: AccountLoader<ChannelBucket> = AccountLoader::try_from(&accs[0])?;
+    let source_info = account_at(accounts, group.source_bucket_account)?;
+    let primary_info = account_at(accounts, group.primary_balance_account)?;
+    require!(
+        source_info.key() != primary_info.key(),
+        RyvoError::InvalidSettlementAccounts
+    );
+    require!(
+        source_info.is_writable,
+        RyvoError::InvalidSettlementAccounts
+    );
+    let bucket_loader: AccountLoader<ChannelBucket> = AccountLoader::try_from(source_info)?;
     let mut bucket = bucket_loader.load_mut()?;
-    let mut payee_balance = load_mut::<Balance>(&accs[1])?;
+    let mut payee_balance = load_mut::<Balance>(primary_info)?;
     require!(
         bucket.version == CHANNEL_BUCKET_VERSION && bucket.kind == CHANNEL_KIND_DIRECT,
         RyvoError::InvalidChannelBucket
     );
-    let slot = bucket
-        .slot_for_channel_id(channel_id)
-        .ok_or(RyvoError::SettlementChannelMismatch)?;
     require!(
         payee_balance.participant == bucket.payee && payee_balance.mint == bucket.mint,
         RyvoError::SettlementBalanceMismatch
     );
 
-    let moved = payable(
-        target,
-        bucket.settled_cumulative[slot],
-        bucket.locked_balance[slot],
-    );
-    if moved > 0 {
-        bucket.locked_balance[slot] -= moved;
-        bucket.settled_cumulative[slot] += moved;
-        payee_balance.available = payee_balance
-            .available
-            .checked_add(moved)
-            .ok_or(RyvoError::MathOverflow)?;
+    let mut balance_changed = false;
+    for &idx in &group.commitment_indices {
+        let i = idx as usize;
+        let (channel_id, target) = unpack_pair(staged_u128(staging, UNI_COL_IDS, i));
+        let staged_bucket = staged_pubkey(staging, UNI_COL_BUCKET, i);
+
+        // The circuit verified the signature under the key stored in this bucket slot.
+        require!(
+            source_info.key() == staged_bucket,
+            RyvoError::SettlementChannelMismatch
+        );
+        let slot = bucket
+            .slot_for_channel_id(channel_id)
+            .ok_or(RyvoError::SettlementChannelMismatch)?;
+        let moved = payable(
+            target,
+            bucket.settled_cumulative[slot],
+            bucket.locked_balance[slot],
+        );
+        if moved > 0 {
+            bucket.locked_balance[slot] -= moved;
+            bucket.settled_cumulative[slot] += moved;
+            payee_balance.available = payee_balance
+                .available
+                .checked_add(moved)
+                .ok_or(RyvoError::MathOverflow)?;
+            balance_changed = true;
+        }
+        emit!(ChannelSettled {
+            bucket: staged_bucket,
+            slot: slot as u8,
+            channel_id,
+            target_cumulative: target,
+            moved,
+            settled_cumulative: bucket.settled_cumulative[slot],
+            locked_balance: bucket.locked_balance[slot],
+        });
+    }
+    if balance_changed {
         payee_balance.exit(&crate::ID)?;
     }
-    emit!(ChannelSettled {
-        bucket: staged_bucket,
-        slot: slot as u8,
-        channel_id,
-        target_cumulative: target,
-        moved,
-        settled_cumulative: bucket.settled_cumulative[slot],
-        locked_balance: bucket.locked_balance[slot],
-    });
     Ok(())
 }
 
-fn settle_route<'info>(
+fn settle_route_group<'info>(
     staging: &StagingBuffer,
-    i: usize,
-    accs: &'info [AccountInfo<'info>],
+    group: &SettlementGroup,
+    accounts: &'info [AccountInfo<'info>],
 ) -> Result<()> {
-    let (source_id, base) = unpack_pair(staged_u128(staging, RT_COL_SOURCE_BASE, i));
-    let (target, allocation_count) = unpack_pair(staged_u128(staging, RT_COL_TARGET_COUNT, i));
+    let mut expected_provider_accounts = 0usize;
+    for &idx in &group.commitment_indices {
+        let (_, allocation_count) =
+            unpack_pair(staged_u128(staging, RT_COL_TARGET_COUNT, idx as usize));
+        require!(
+            allocation_count >= 1 && allocation_count <= MAX_ROUTE_ALLOCATIONS as u64,
+            RyvoError::InvalidRouteAllocations
+        );
+        expected_provider_accounts = expected_provider_accounts
+            .checked_add(allocation_count as usize)
+            .ok_or(RyvoError::MathOverflow)?;
+    }
     require!(
-        allocation_count >= 1 && allocation_count <= MAX_ROUTE_ALLOCATIONS as u64,
-        RyvoError::InvalidRouteAllocations
-    );
-    require!(
-        accs.len() == 2 + allocation_count as usize,
+        group.provider_balance_accounts.len() == expected_provider_accounts,
         RyvoError::InvalidSettlementAccounts
     );
-    let staged_bucket = staged_pubkey(staging, RT_COL_SOURCE_BUCKET, i);
 
+    let source_info = account_at(accounts, group.source_bucket_account)?;
+    let primary_info = account_at(accounts, group.primary_balance_account)?;
     require!(
-        accs[0].key() == staged_bucket,
-        RyvoError::SettlementChannelMismatch
+        source_info.key() != primary_info.key() && source_info.is_writable,
+        RyvoError::InvalidSettlementAccounts
     );
-    require!(accs[0].is_writable, RyvoError::InvalidSettlementAccounts);
-    let bucket_loader: AccountLoader<ChannelBucket> = AccountLoader::try_from(&accs[0])?;
+    let bucket_loader: AccountLoader<ChannelBucket> = AccountLoader::try_from(source_info)?;
     let mut bucket = bucket_loader.load_mut()?;
-    let mut gateway_balance = load_mut::<Balance>(&accs[1])?;
+    let mut gateway_balance = load_mut::<Balance>(primary_info)?;
     require!(
         bucket.version == CHANNEL_BUCKET_VERSION && bucket.kind == CHANNEL_KIND_ROUTED,
         RyvoError::InvalidChannelBucket
     );
-    let slot = bucket
-        .slot_for_channel_id(source_id)
-        .ok_or(RyvoError::SettlementChannelMismatch)?;
     require!(
         bucket.payee == staging.route_gateway && bucket.mint == staging.route_mint,
         RyvoError::SettlementRouteMismatch
@@ -1370,87 +1406,108 @@ fn settle_route<'info>(
             && gateway_balance.mint == staging.route_mint,
         RyvoError::SettlementBalanceMismatch
     );
-    require!(
-        bucket.settled_cumulative[slot] >= base,
-        RyvoError::RouteBaseNotReached
-    );
+    let mut provider_cursor = 0usize;
+    let mut gateway_changed = false;
+    for &idx in &group.commitment_indices {
+        let i = idx as usize;
+        let (source_id, base) = unpack_pair(staged_u128(staging, RT_COL_SOURCE_BASE, i));
+        let (target, allocation_count) = unpack_pair(staged_u128(staging, RT_COL_TARGET_COUNT, i));
+        let staged_bucket = staged_pubkey(staging, RT_COL_SOURCE_BUCKET, i);
+        require!(
+            source_info.key() == staged_bucket,
+            RyvoError::SettlementChannelMismatch
+        );
+        let slot = bucket
+            .slot_for_channel_id(source_id)
+            .ok_or(RyvoError::SettlementChannelMismatch)?;
+        require!(
+            bucket.settled_cumulative[slot] >= base,
+            RyvoError::RouteBaseNotReached
+        );
 
-    let old_cumulative = bucket.settled_cumulative[slot];
-    let moved = payable(target, old_cumulative, bucket.locked_balance[slot]);
-    let new_cumulative = old_cumulative
-        .checked_add(moved)
-        .ok_or(RyvoError::MathOverflow)?;
-    bucket.locked_balance[slot] -= moved;
-    bucket.settled_cumulative[slot] = new_cumulative;
-
-    let mut provider_paid = 0u64;
-    let mut range_start = base;
-    for a in 0..allocation_count as usize {
-        let (participant_id, amount) = unpack_pair(staged_u128(
-            staging,
-            RT_COL_ALLOCATIONS,
-            i * MAX_ROUTE_ALLOCATIONS + a,
-        ));
-        let range_end = range_start
-            .checked_add(amount)
+        let old_cumulative = bucket.settled_cumulative[slot];
+        let moved = payable(target, old_cumulative, bucket.locked_balance[slot]);
+        let new_cumulative = old_cumulative
+            .checked_add(moved)
             .ok_or(RyvoError::MathOverflow)?;
-        require!(range_end <= target, RyvoError::InvalidRouteAllocations);
-        require!(
-            accs[a + 2].key() != accs[1].key(),
-            RyvoError::InvalidSettlementAccounts
-        );
-        let mut provider_balance = load_mut::<Balance>(&accs[a + 2])?;
-        require!(
-            provider_balance.participant_id == participant_id
-                && provider_balance.mint == staging.route_mint,
-            RyvoError::SettlementBalanceMismatch
-        );
+        bucket.locked_balance[slot] -= moved;
+        bucket.settled_cumulative[slot] = new_cumulative;
 
-        let paid_start = old_cumulative.max(range_start);
-        let paid_end = new_cumulative.min(range_end);
-        let paid = paid_end.saturating_sub(paid_start);
-        if paid > 0 {
-            provider_balance.available = provider_balance
-                .available
-                .checked_add(paid)
+        let mut provider_paid = 0u64;
+        let mut range_start = base;
+        for a in 0..allocation_count as usize {
+            let provider_account = group.provider_balance_accounts[provider_cursor];
+            provider_cursor += 1;
+            let provider_info = account_at(accounts, provider_account)?;
+            require!(
+                provider_info.key() != primary_info.key(),
+                RyvoError::InvalidSettlementAccounts
+            );
+            let (participant_id, amount) = unpack_pair(staged_u128(
+                staging,
+                RT_COL_ALLOCATIONS,
+                i * MAX_ROUTE_ALLOCATIONS + a,
+            ));
+            let range_end = range_start
+                .checked_add(amount)
                 .ok_or(RyvoError::MathOverflow)?;
-            provider_balance.exit(&crate::ID)?;
-            provider_paid = provider_paid
-                .checked_add(paid)
-                .ok_or(RyvoError::MathOverflow)?;
+            require!(range_end <= target, RyvoError::InvalidRouteAllocations);
+            let mut provider_balance = load_mut::<Balance>(provider_info)?;
+            require!(
+                provider_balance.participant_id == participant_id
+                    && provider_balance.mint == staging.route_mint,
+                RyvoError::SettlementBalanceMismatch
+            );
+
+            let paid_start = old_cumulative.max(range_start);
+            let paid_end = new_cumulative.min(range_end);
+            let paid = paid_end.saturating_sub(paid_start);
+            if paid > 0 {
+                provider_balance.available = provider_balance
+                    .available
+                    .checked_add(paid)
+                    .ok_or(RyvoError::MathOverflow)?;
+                provider_balance.exit(&crate::ID)?;
+                provider_paid = provider_paid
+                    .checked_add(paid)
+                    .ok_or(RyvoError::MathOverflow)?;
+            }
+            emit!(RouteProviderPaid {
+                source_bucket: staged_bucket,
+                source_slot: slot as u8,
+                source_channel_id: source_id,
+                provider: provider_balance.participant,
+                participant_id,
+                amount: paid,
+            });
+            range_start = range_end;
         }
-        emit!(RouteProviderPaid {
+
+        let gateway_fee = moved
+            .checked_sub(provider_paid)
+            .ok_or(RyvoError::MathOverflow)?;
+        if gateway_fee > 0 {
+            gateway_balance.available = gateway_balance
+                .available
+                .checked_add(gateway_fee)
+                .ok_or(RyvoError::MathOverflow)?;
+            gateway_changed = true;
+        }
+        emit!(RouteSettled {
             source_bucket: staged_bucket,
             source_slot: slot as u8,
             source_channel_id: source_id,
-            provider: provider_balance.participant,
-            participant_id,
-            amount: paid,
+            base_cumulative: base,
+            target_cumulative: target,
+            moved,
+            provider_paid,
+            gateway_fee,
+            allocation_count: allocation_count as u8,
         });
-        range_start = range_end;
     }
-
-    let gateway_fee = moved
-        .checked_sub(provider_paid)
-        .ok_or(RyvoError::MathOverflow)?;
-    if gateway_fee > 0 {
-        gateway_balance.available = gateway_balance
-            .available
-            .checked_add(gateway_fee)
-            .ok_or(RyvoError::MathOverflow)?;
+    if gateway_changed {
         gateway_balance.exit(&crate::ID)?;
     }
-    emit!(RouteSettled {
-        source_bucket: staged_bucket,
-        source_slot: slot as u8,
-        source_channel_id: source_id,
-        base_cumulative: base,
-        target_cumulative: target,
-        moved,
-        provider_paid,
-        gateway_fee,
-        allocation_count: allocation_count as u8,
-    });
     Ok(())
 }
 

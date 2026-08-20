@@ -62,6 +62,7 @@ import {
   ensureCompDef,
   openStaging,
   sealAndQueue,
+  settlementInstruction,
   stageBatch,
   stagingTxCount,
   supportsTxV1,
@@ -725,19 +726,14 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   async function settleBatch(b: { first: number; count: number }) {
     const t = await ensureLookupTable();
     for (const indices of settleChunks(b)) {
-      const remaining = indices.flatMap((i) => {
+      const ix = await settlementInstruction(program, staging, indices, (i) => {
         const r = routeOf[b.first + i];
         return [
           chanAG[r.agent].key,
           gateway.balance,
           providers[r.provider].balance,
-        ].map((pubkey) => ({ pubkey, isWritable: true, isSigner: false }));
+        ];
       });
-      const ix = await program.methods
-        .settleChannels(Buffer.from(indices))
-        .accounts({ staging, clearingResult: clearingPda(programId, staging) })
-        .remainingAccounts(remaining)
-        .instruction();
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       const msg = new TransactionMessage({
         payerKey: payer.publicKey,

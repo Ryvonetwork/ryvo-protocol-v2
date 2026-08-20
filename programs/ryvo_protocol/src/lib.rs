@@ -311,9 +311,9 @@ pub mod ryvo_protocol {
 
     pub fn settle_channels<'info>(
         ctx: Context<'info, SettleChannels<'info>>,
-        indices: Vec<u8>,
+        groups: Vec<SettlementGroup>,
     ) -> Result<()> {
-        clearing::settle_channels_handler(ctx, indices)
+        clearing::settle_channels_handler(ctx, groups)
     }
 
     pub fn close_staging(ctx: Context<CloseStaging>) -> Result<()> {
