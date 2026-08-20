@@ -22,10 +22,6 @@ pub const BALANCE_SEED: &str = "balance";
 #[constant]
 pub const CHANNEL_SEED: &str = "channel";
 
-
-#[constant]
-pub const POOL_SEED: &str = "pool";
-
 #[constant]
 pub const CLEARING_SEED: &str = "clearing";
 
@@ -54,4 +50,3 @@ pub const MIN_TIMELOCK_SECONDS: i64 = 1;
 
 /// Mint decimals ceiling. Nothing sane exceeds 9.
 pub const MAX_MINT_DECIMALS: u8 = 9;
-

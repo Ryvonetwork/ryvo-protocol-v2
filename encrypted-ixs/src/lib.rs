@@ -18,11 +18,11 @@ mod circuits {
     use arcis::*;
 
     /// Commitments per batch. Fixed at compile time; shorter batches are padded by the relayer.
-    /// Route batches are half the size: each route needs two key account arguments, and the
-    /// Arcium program's own 32 KB heap tops out somewhere between 66 and 131 account arguments
-    /// per computation.
+    /// Route batches are half the size because each commitment carries up to 16 provider
+    /// allocations and two signatures; 64 route commitments made circuit compilation impractical.
     pub const N_UNI: usize = 64;
-    pub const N_ROUTE: usize = 64;
+    pub const N_ROUTE: usize = 32;
+    pub const MAX_ROUTE_ALLOCATIONS: usize = 16;
 
     /// `b"ryvo-commitment-v1"`
     const TAG: [u8; 18] = [
@@ -78,42 +78,51 @@ mod circuits {
         out
     }
 
-    /// Two signers per record over the same bytes: the agent (channel_ag) and the gateway
-    /// (channel_gp). Preimage: TAG | domain | 0x02 | 0x01 | ids(16) | targets(16) = 68 B.
-    /// The bit is set only if BOTH signatures verify.
+    /// Two signers over one agent source-channel target and its complete provider allocation.
+    /// The gateway key is shared by the batch: route batches contain one gateway and mint.
     #[instruction]
-    pub fn clear_route64(
+    pub fn clear_route32(
         domain: u128,
-        ids: [u128; N_ROUTE],
-        targets: [u128; N_ROUTE],
+        source_base: [u128; N_ROUTE],
+        target_count: [u128; N_ROUTE],
+        allocations: [u128; N_ROUTE * MAX_ROUTE_ALLOCATIONS],
         vk_agent: [Pack<VerifyingKey>; N_ROUTE],
-        vk_gateway: [Pack<VerifyingKey>; N_ROUTE],
+        vk_gateway: Pack<VerifyingKey>,
         sig_agent: [Pack<Sig>; N_ROUTE],
         sig_gateway: [Pack<Sig>; N_ROUTE],
     ) -> [bool; N_ROUTE] {
         let d = u128_to_le_bytes(domain);
+        let gateway_key = vk_gateway.unpack();
         let mut out = [false; N_ROUTE];
         for i in 0..N_ROUTE {
-            let idb = u128_to_le_bytes(ids[i]);
-            let tgb = u128_to_le_bytes(targets[i]);
-            let mut pre = [0u8; 68];
+            let sb = u128_to_le_bytes(source_base[i]);
+            let tc = u128_to_le_bytes(target_count[i]);
+            let mut pre = [0u8; 324];
             for j in 0..18 {
                 pre[j] = TAG[j];
             }
             for j in 0..16 {
                 pre[18 + j] = d[j];
-                pre[36 + j] = idb[j];
-                pre[52 + j] = tgb[j];
+                pre[36 + j] = sb[j];
+                pre[52 + j] = tc[j];
+            }
+            for a in 0..MAX_ROUTE_ALLOCATIONS {
+                let allocation = u128_to_le_bytes(allocations[i * MAX_ROUTE_ALLOCATIONS + a]);
+                for j in 0..16 {
+                    pre[68 + a * 16 + j] = allocation[j];
+                }
             }
             pre[34] = KIND_ROUTE;
             pre[35] = VERSION;
             let digest = SHA3_256::new().digest(&pre);
-            let a_ok = vk_agent[i]
-                .unpack()
-                .verify(&digest, &ArcisEd25519Signature::from_bytes(sig_agent[i].unpack().bytes));
-            let g_ok = vk_gateway[i]
-                .unpack()
-                .verify(&digest, &ArcisEd25519Signature::from_bytes(sig_gateway[i].unpack().bytes));
+            let a_ok = vk_agent[i].unpack().verify(
+                &digest,
+                &ArcisEd25519Signature::from_bytes(sig_agent[i].unpack().bytes),
+            );
+            let g_ok = gateway_key.verify(
+                &digest,
+                &ArcisEd25519Signature::from_bytes(sig_gateway[i].unpack().bytes),
+            );
             out[i] = a_ok && g_ok;
         }
         out

@@ -51,7 +51,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
   const wallet = localWallet();
 
   const vectors = JSON.parse(
-    fs.readFileSync("tests/vectors/commitment.json", "utf8"),
+    fs.readFileSync("tests/vectors/commitment.json", "utf8")
   );
 
   before(async () => {
@@ -77,14 +77,26 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           : {
               kind: KIND_ROUTE,
               messageDomain: Buffer.from(v.messageDomain, "hex"),
-              channelAgId: BigInt(v.channelAgId),
-              channelGpId: BigInt(v.channelGpId),
-              targetAg: BigInt(v.targetAg),
-              targetGp: BigInt(v.targetGp),
+              sourceChannelId: BigInt(v.sourceChannelId),
+              baseCumulative: BigInt(v.baseCumulative),
+              targetCumulative: BigInt(v.targetCumulative),
+              allocations: v.allocations.map((a: any) => ({
+                participantId: BigInt(a.participantId),
+                amount: BigInt(a.amount),
+              })),
             };
-      expect(encodeCommitment(c).toString("hex"), `encode mismatch: ${v.name}`).to.equal(v.encoded);
-      expect(commitmentDigest(c).toString("hex"), `digest mismatch: ${v.name}`).to.equal(v.digest);
-      expect(bodySlots(c).map(String), `slot mismatch: ${v.name}`).to.deep.equal(v.bodySlots);
+      expect(
+        encodeCommitment(c).toString("hex"),
+        `encode mismatch: ${v.name}`
+      ).to.equal(v.encoded);
+      expect(
+        commitmentDigest(c).toString("hex"),
+        `digest mismatch: ${v.name}`
+      ).to.equal(v.digest);
+      expect(
+        bodySlots(c).map(String),
+        `slot mismatch: ${v.name}`
+      ).to.deep.equal(v.bodySlots);
       // The slots' LE bytes must be the canonical body verbatim: that is what the circuit hashes.
       const enc = encodeCommitment(c);
       const slotBytes = Buffer.concat(
@@ -93,9 +105,11 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           b.writeBigUInt64LE(x & ((1n << 64n) - 1n), 0);
           b.writeBigUInt64LE(x >> 64n, 8);
           return b;
-        }),
+        })
       );
-      expect(slotBytes.toString("hex")).to.equal(enc.subarray(18).toString("hex"));
+      expect(slotBytes.toString("hex")).to.equal(
+        enc.subarray(18).toString("hex")
+      );
       // Round-trip through the decoder.
       expect(decodeCommitment(Buffer.from(v.encoded, "hex"))).to.deep.equal(c);
     }
@@ -105,12 +119,12 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     for (const md of vectors.messageDomains) {
       expect(
         deriveMessageDomain(program.programId, md.chainId).toString("hex"),
-        `domain mismatch for chain ${md.chainId}`,
+        `domain mismatch for chain ${md.chainId}`
       ).to.equal(md.domain);
     }
     const cfg = await program.account.config.fetch(configPda);
     expect(Buffer.from(cfg.messageDomain).toString("hex")).to.equal(
-      deriveMessageDomain(program.programId, CHAIN_ID).toString("hex"),
+      deriveMessageDomain(program.programId, CHAIN_ID).toString("hex")
     );
   });
 
@@ -119,20 +133,33 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     const pk = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
     const pks = packBytesToSlots(pk);
     expect(pks.length).to.equal(2);
-    expect(pks[0].subarray(0, 26).toString("hex")).to.equal(pk.subarray(0, 26).toString("hex"));
-    expect(pks[1].subarray(0, 6).toString("hex")).to.equal(pk.subarray(26).toString("hex"));
-    expect(pks[0].subarray(26).every((b) => b === 0) && pks[1].subarray(6).every((b) => b === 0)).to.be.true;
+    expect(pks[0].subarray(0, 26).toString("hex")).to.equal(
+      pk.subarray(0, 26).toString("hex")
+    );
+    expect(pks[1].subarray(0, 6).toString("hex")).to.equal(
+      pk.subarray(26).toString("hex")
+    );
+    expect(
+      pks[0].subarray(26).every((b) => b === 0) &&
+        pks[1].subarray(6).every((b) => b === 0)
+    ).to.be.true;
     expect(unpackPubkeySlots(pks).toString("hex")).to.equal(pk.toString("hex"));
     const sig = Buffer.from(Array.from({ length: 64 }, (_, i) => 100 + i));
     const sigs = packBytesToSlots(sig);
     expect(sigs.length).to.equal(3);
-    expect(sigs[2].subarray(0, 12).toString("hex")).to.equal(sig.subarray(52).toString("hex"));
+    expect(sigs[2].subarray(0, 12).toString("hex")).to.equal(
+      sig.subarray(52).toString("hex")
+    );
   });
 
   it("rejects malformed canonical messages", () => {
     const good = Buffer.from(vectors.commitments[0].encoded, "hex");
-    expect(() => decodeCommitment(good.subarray(0, UNILATERAL_LEN - 1))).to.throw();
-    expect(() => decodeCommitment(Buffer.concat([good, Buffer.alloc(1)]))).to.throw();
+    expect(() =>
+      decodeCommitment(good.subarray(0, UNILATERAL_LEN - 1))
+    ).to.throw();
+    expect(() =>
+      decodeCommitment(Buffer.concat([good, Buffer.alloc(1)]))
+    ).to.throw();
     // A unilateral-length message claiming to be a route, and vice versa.
     const badKind = Buffer.from(good);
     badKind[16] = KIND_ROUTE;
@@ -188,11 +215,13 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     const stdSig = standardEd25519.sign(digest, seed);
 
     expect(Buffer.from(arcisSig).equals(Buffer.from(stdSig))).to.be.false;
-    expect(arcisVerify(stdSig, digest, arcisPub), "arcis accepted an RFC 8032 signature").to.be
-      .false;
+    expect(
+      arcisVerify(stdSig, digest, arcisPub),
+      "arcis accepted an RFC 8032 signature"
+    ).to.be.false;
     expect(
       standardEd25519.verify(arcisSig, digest, stdPub),
-      "RFC 8032 accepted an arcis signature",
+      "RFC 8032 accepted an arcis signature"
     ).to.be.false;
   });
 
@@ -202,20 +231,19 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     // governs key derivation too: Ed25519 derives its scalar as clamp(hash(seed)[0..32]).
     //
     // So one seed gives an agent two different identities. The wallet address is NOT usable as
-    // authorized_signer — which is exactly why create_channel requires the signer explicitly
-    // rather than defaulting to the payer's wallet.
+    // authorized_signer — which is why participant registration stores a separate Arcis key.
     const wallet = Keypair.generate();
     const seed = wallet.secretKey.slice(0, 32); // Solana stores seed || pubkey
 
     // Sanity: the seed really is the wallet's.
-    expect(Buffer.from(standardEd25519.getPublicKey(seed)).toString("hex")).to.equal(
-      Buffer.from(wallet.publicKey.toBytes()).toString("hex"),
-    );
+    expect(
+      Buffer.from(standardEd25519.getPublicKey(seed)).toString("hex")
+    ).to.equal(Buffer.from(wallet.publicKey.toBytes()).toString("hex"));
 
     const arcisPub = arcisPublicKey(seed);
     expect(
       Buffer.from(arcisPub).equals(Buffer.from(wallet.publicKey.toBytes())),
-      "if this ever passes, wallet keys became usable and the guidance should change",
+      "if this ever passes, wallet keys became usable and the guidance should change"
     ).to.be.false;
 
     // And a signature made with that seed verifies only under the Arcis pubkey.
@@ -260,21 +288,25 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
 
       const a = signCommitment(seed, commitA);
       const b = signCommitment(seed, commitB);
-      expect(a.publicKey.toString("hex")).to.equal(signer.publicKey.toString("hex"));
-      expect(b.publicKey.toString("hex")).to.equal(signer.publicKey.toString("hex"));
+      expect(a.publicKey.toString("hex")).to.equal(
+        signer.publicKey.toString("hex")
+      );
+      expect(b.publicKey.toString("hex")).to.equal(
+        signer.publicKey.toString("hex")
+      );
     });
 
     it("gives a different key per wallet", () => {
-      expect(deriveArcisSigner(walletSeed()).publicKey.toString("hex")).to.not.equal(
-        deriveArcisSigner(walletSeed()).publicKey.toString("hex"),
-      );
+      expect(
+        deriveArcisSigner(walletSeed()).publicKey.toString("hex")
+      ).to.not.equal(deriveArcisSigner(walletSeed()).publicKey.toString("hex"));
     });
 
     it("never equals the wallet address", () => {
       const wallet = Keypair.generate();
       const signer = deriveArcisSigner(wallet.secretKey.slice(0, 32));
       expect(signer.publicKey.toString("hex")).to.not.equal(
-        Buffer.from(wallet.publicKey.toBytes()).toString("hex"),
+        Buffer.from(wallet.publicKey.toBytes()).toString("hex")
       );
     });
 
@@ -310,10 +342,13 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       const route: Commitment = {
         kind: KIND_ROUTE,
         messageDomain: deriveMessageDomain(program.programId, CHAIN_ID),
-        channelAgId: channelA,
-        channelGpId: channelB,
-        targetAg: 500_000n,
-        targetGp: 495_000n,
+        sourceChannelId: channelA,
+        baseCumulative: 0n,
+        targetCumulative: 500_000n,
+        allocations: [
+          { participantId: 41n, amount: 300_000n },
+          { participantId: 42n, amount: 195_000n },
+        ],
       };
       const a = signCommitment(agentSeed, route);
       const g = signCommitment(gatewaySeed, route);
@@ -335,7 +370,10 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
   // -------------------------------------------------------- solvency property
 
   it("preserves solvency across a randomized operation sequence", async () => {
-    const mints: PublicKey[] = [await newMint(provider, 6), await newMint(provider, 6)];
+    const mints: PublicKey[] = [
+      await newMint(provider, 6),
+      await newMint(provider, 6),
+    ];
     const tokenConfigs = new Map<string, PublicKey>();
     const vaults = new Map<string, PublicKey>();
 
@@ -347,24 +385,43 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       await program.methods
         .registerToken()
         .accounts({
-          authority: authority.publicKey, config: configPda, mint: m, tokenConfig: tc, vault: v,
-          tokenProgram: TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId,
+          authority: authority.publicKey,
+          config: configPda,
+          mint: m,
+          tokenConfig: tc,
+          vault: v,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
           rent: anchor.web3.SYSVAR_RENT_PUBKEY,
         })
         .signers([authority])
         .rpc();
     }
 
-    interface P { owner: Keypair; participant: PublicKey; balances: Map<string, PublicKey>; atas: Map<string, PublicKey>; }
+    interface P {
+      owner: Keypair;
+      participant: PublicKey;
+      balances: Map<string, PublicKey>;
+      atas: Map<string, PublicKey>;
+    }
     const parties: P[] = [];
     for (let i = 0; i < 3; i++) {
       const owner = Keypair.generate();
       await fund(provider, owner.publicKey, 5);
       const participant = seeds.participant(program.programId, owner.publicKey);
+      const signer = new PublicKey(
+        deriveArcisSigner(owner.secretKey.slice(0, 32)).publicKey
+      );
       await program.methods
-        .initializeParticipant()
-        .accounts({ owner: owner.publicKey, participant, systemProgram: SystemProgram.programId })
-        .signers([owner]).rpc();
+        .initializeParticipant(signer)
+        .accounts({
+          owner: owner.publicKey,
+          config: configPda,
+          participant,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
 
       const balances = new Map<string, PublicKey>();
       const atas = new Map<string, PublicKey>();
@@ -373,20 +430,35 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         await program.methods
           .openBalance()
           .accounts({
-            payer: owner.publicKey, participant, mint: m,
-            tokenConfig: tokenConfigs.get(m.toBase58())!, balance: bal,
+            payer: owner.publicKey,
+            participant,
+            mint: m,
+            tokenConfig: tokenConfigs.get(m.toBase58())!,
+            balance: bal,
             systemProgram: SystemProgram.programId,
           })
-          .signers([owner]).rpc();
+          .signers([owner])
+          .rpc();
         balances.set(m.toBase58(), bal);
 
         const ata = await createAssociatedTokenAccount(
-          provider.connection, wallet, m, owner.publicKey,
-          { commitment: "confirmed" }, TOKEN_PROGRAM_ID,
+          provider.connection,
+          wallet,
+          m,
+          owner.publicKey,
+          { commitment: "confirmed" },
+          TOKEN_PROGRAM_ID
         );
         await mintTo(
-          provider.connection, wallet, m, ata, wallet, 500 * ONE, [],
-          { commitment: "confirmed" }, TOKEN_PROGRAM_ID,
+          provider.connection,
+          wallet,
+          m,
+          ata,
+          wallet,
+          500 * ONE,
+          [],
+          { commitment: "confirmed" },
+          TOKEN_PROGRAM_ID
         );
         atas.set(m.toBase58(), ata);
       }
@@ -398,10 +470,16 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
     for (const m of mints) {
       for (let i = 0; i < parties.length; i++) {
         const j = (i + 1) % parties.length;
-        const from = parties[i], to = parties[j];
-        const key = seeds.channel(program.programId, from.participant, to.participant, m);
+        const from = parties[i],
+          to = parties[j];
+        const key = seeds.channel(
+          program.programId,
+          from.participant,
+          to.participant,
+          m
+        );
         await program.methods
-          .createChannel(Keypair.generate().publicKey)
+          .createChannel()
           .accounts({
             payerOwner: from.owner.publicKey,
             config: configPda,
@@ -414,14 +492,20 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
             channel: key,
             systemProgram: SystemProgram.programId,
           })
-          .signers([from.owner]).rpc();
+          .signers([from.owner])
+          .rpc();
         channels.push({ key, from, mint: m });
       }
     }
 
     async function assertSolvent(m: PublicKey) {
       const key = m.toBase58();
-      const vaultAcc = await getAccount(provider.connection, vaults.get(key)!, "confirmed", TOKEN_PROGRAM_ID);
+      const vaultAcc = await getAccount(
+        provider.connection,
+        vaults.get(key)!,
+        "confirmed",
+        TOKEN_PROGRAM_ID
+      );
       const balances = await program.account.balance.all();
       const chans = await program.account.channel.all();
       const sumAvailable = balances
@@ -430,9 +514,10 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       const sumLocked = chans
         .filter((c) => c.account.mint.toBase58() === key)
         .reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
-      expect(vaultAcc.amount.toString(), `solvency violated for mint ${key}`).to.equal(
-        (sumAvailable + sumLocked).toString(),
-      );
+      expect(
+        vaultAcc.amount.toString(),
+        `solvency violated for mint ${key}`
+      ).to.equal((sumAvailable + sumLocked).toString());
     }
 
     // Deterministic pseudo-random so a failure is reproducible.
@@ -455,47 +540,76 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           await program.methods
             .deposit(new anchor.BN((1 + rand(20)) * ONE))
             .accounts({
-              funder: p.owner.publicKey, mint: m, tokenConfig: tokenConfigs.get(mk)!,
-              vault: vaults.get(mk)!, funderTokenAccount: p.atas.get(mk)!,
-              participant: p.participant, balance: bal, tokenProgram: TOKEN_PROGRAM_ID,
+              funder: p.owner.publicKey,
+              mint: m,
+              tokenConfig: tokenConfigs.get(mk)!,
+              vault: vaults.get(mk)!,
+              funderTokenAccount: p.atas.get(mk)!,
+              participant: p.participant,
+              balance: bal,
+              tokenProgram: TOKEN_PROGRAM_ID,
             })
-            .signers([p.owner]).rpc();
+            .signers([p.owner])
+            .rpc();
         } else if (op === 1) {
-          const ch = channels.filter((c) => c.from === p && c.mint.equals(m))[0];
+          const ch = channels.filter(
+            (c) => c.from === p && c.mint.equals(m)
+          )[0];
           if (!ch) continue;
           const b = await program.account.balance.fetch(bal);
-          const amt = Number(b.available) > 0 ? 1 + rand(Math.max(1, Math.floor(Number(b.available) / ONE))) : 0;
+          const amt =
+            Number(b.available) > 0
+              ? 1 + rand(Math.max(1, Math.floor(Number(b.available) / ONE)))
+              : 0;
           if (amt === 0) continue;
           await program.methods
             .lockChannelFunds(new anchor.BN(amt * ONE))
             .accounts({
-              payerOwner: p.owner.publicKey, payerParticipant: p.participant, config: configPda,
-              channel: ch.key, payerBalance: bal,
+              payerOwner: p.owner.publicKey,
+              payerParticipant: p.participant,
+              config: configPda,
+              channel: ch.key,
+              payerBalance: bal,
             })
-            .signers([p.owner]).rpc();
+            .signers([p.owner])
+            .rpc();
         } else if (op === 2) {
-          const ch = channels.filter((c) => c.from === p && c.mint.equals(m))[0];
+          const ch = channels.filter(
+            (c) => c.from === p && c.mint.equals(m)
+          )[0];
           if (!ch) continue;
           const c = await program.account.channel.fetch(ch.key);
           if (Number(c.lockedBalance) === 0) continue;
           await program.methods
-            .requestUnlockChannelFunds(new anchor.BN(c.lockedBalance.toString()))
+            .requestUnlockChannelFunds(
+              new anchor.BN(c.lockedBalance.toString())
+            )
             .accounts({
-              payerOwner: p.owner.publicKey, payerParticipant: p.participant, config: configPda,
-              channel: ch.key, payerBalance: bal,
+              payerOwner: p.owner.publicKey,
+              payerParticipant: p.participant,
+              config: configPda,
+              channel: ch.key,
+              payerBalance: bal,
             })
-            .signers([p.owner]).rpc();
+            .signers([p.owner])
+            .rpc();
         } else {
           const b = await program.account.balance.fetch(bal);
           if (Number(b.available) === 0) continue;
           await program.methods
             .withdraw(new anchor.BN(1 + rand(Number(b.available))))
             .accounts({
-              owner: p.owner.publicKey, participant: p.participant,
-              mint: m, tokenConfig: tokenConfigs.get(mk)!, vault: vaults.get(mk)!,
-              balance: bal, destination: p.atas.get(mk)!, tokenProgram: TOKEN_PROGRAM_ID,
+              owner: p.owner.publicKey,
+              participant: p.participant,
+              mint: m,
+              tokenConfig: tokenConfigs.get(mk)!,
+              vault: vaults.get(mk)!,
+              balance: bal,
+              destination: p.atas.get(mk)!,
+              tokenProgram: TOKEN_PROGRAM_ID,
             })
-            .signers([p.owner]).rpc();
+            .signers([p.owner])
+            .rpc();
         }
         applied++;
       } catch {
@@ -505,7 +619,10 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       await assertSolvent(m);
     }
 
-    expect(applied, "the driver applied too few operations to be meaningful").to.be.greaterThan(15);
+    expect(
+      applied,
+      "the driver applied too few operations to be meaningful"
+    ).to.be.greaterThan(15);
     for (const m of mints) await assertSolvent(m);
   });
 });

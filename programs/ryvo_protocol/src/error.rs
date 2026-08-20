@@ -45,15 +45,6 @@ pub enum RyvoError {
     NoChannelUnlockPending,
     #[msg("Channel unlock timelock has not elapsed")]
     ChannelUnlockLocked,
-    #[msg("Insufficient pool balance")]
-    InsufficientPoolBalance,
-    #[msg("No pool unlock is pending")]
-    NoPoolUnlockPending,
-    #[msg("Pool unlock timelock has not elapsed")]
-    PoolUnlockLocked,
-    #[msg("Route pool account is not the gateway's pool for this mint")]
-    SettlementPoolMismatch,
-
     // --- commitment message ---
     // Exercised by unit tests in v1; the settlement path that consumes them lands in v2.
     #[msg("Commitment message is malformed")]
@@ -62,6 +53,8 @@ pub enum RyvoError {
     InvalidMessageDomain,
     #[msg("Commitment amount must strictly increase")]
     CommitmentAmountMustIncrease,
+    #[msg("Route provider allocations are invalid")]
+    InvalidRouteAllocations,
 
     // --- clearing ---
     #[msg("Staging kind is not unilateral or route")]
@@ -106,4 +99,8 @@ pub enum RyvoError {
     ForeignComputation,
     #[msg("Commitment target is at or below the channel's settled watermark")]
     CommitmentAlreadySettled,
+    #[msg("Route commitment base is above the channel's settled watermark")]
+    RouteBaseNotReached,
+    #[msg("Every route commitment in a batch must use the same gateway and mint")]
+    RouteBatchMismatch,
 }

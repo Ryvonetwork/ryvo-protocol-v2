@@ -42,6 +42,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     owner: Keypair;
     participant: PublicKey;
     balance: PublicKey;
+    signer: PublicKey;
   }
 
   let payer: Party;
@@ -51,9 +52,17 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     const owner = Keypair.generate();
     await fund(provider, owner.publicKey, 5);
     const participant = seeds.participant(program.programId, owner.publicKey);
+    const signer = new PublicKey(
+      deriveArcisSigner(owner.secretKey.slice(0, 32)).publicKey
+    );
     await program.methods
-      .initializeParticipant()
-      .accounts({ owner: owner.publicKey, participant, systemProgram: SystemProgram.programId })
+      .initializeParticipant(signer)
+      .accounts({
+        owner: owner.publicKey,
+        config: configPda,
+        participant,
+        systemProgram: SystemProgram.programId,
+      })
       .signers([owner])
       .rpc();
 
@@ -61,7 +70,11 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     await program.methods
       .openBalance()
       .accounts({
-        payer: owner.publicKey, participant, mint, tokenConfig, balance,
+        payer: owner.publicKey,
+        participant,
+        mint,
+        tokenConfig,
+        balance,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -69,30 +82,45 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
 
     if (deposit > 0) {
       const ata = await createAssociatedTokenAccount(
-        provider.connection, payerWallet, mint, owner.publicKey,
-        { commitment: "confirmed" }, TOKEN_PROGRAM_ID,
+        provider.connection,
+        payerWallet,
+        mint,
+        owner.publicKey,
+        { commitment: "confirmed" },
+        TOKEN_PROGRAM_ID
       );
       await mintTo(
-        provider.connection, payerWallet, mint, ata, payerWallet, deposit, [],
-        { commitment: "confirmed" }, TOKEN_PROGRAM_ID,
+        provider.connection,
+        payerWallet,
+        mint,
+        ata,
+        payerWallet,
+        deposit,
+        [],
+        { commitment: "confirmed" },
+        TOKEN_PROGRAM_ID
       );
       await program.methods
         .deposit(new anchor.BN(deposit))
         .accounts({
-          funder: owner.publicKey, mint, tokenConfig, vault,
-          funderTokenAccount: ata, participant, balance,
+          funder: owner.publicKey,
+          mint,
+          tokenConfig,
+          vault,
+          funderTokenAccount: ata,
+          participant,
+          balance,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([owner])
         .rpc();
     }
-    return { owner, participant, balance };
+    return { owner, participant, balance, signer };
   }
 
-
-  const createChannel = (from: Party, to: Party, signer: PublicKey) =>
+  const createChannel = (from: Party, to: Party) =>
     program.methods
-      .createChannel(signer)
+      .createChannel()
       .accounts({
         payerOwner: from.owner.publicKey,
         config: configPda,
@@ -102,7 +130,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
         tokenConfig,
         payerBalance: from.balance,
         payeeBalance: to.balance,
-        channel: seeds.channel(program.programId, from.participant, to.participant, mint),
+        channel: seeds.channel(
+          program.programId,
+          from.participant,
+          to.participant,
+          mint
+        ),
         systemProgram: SystemProgram.programId,
       })
       .signers([from.owner]);
@@ -123,8 +156,13 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     await program.methods
       .registerToken()
       .accounts({
-        authority: authority.publicKey, config: configPda, mint, tokenConfig, vault,
-        tokenProgram: TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId,
+        authority: authority.publicKey,
+        config: configPda,
+        mint,
+        tokenConfig,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
       })
       .signers([authority])
@@ -135,7 +173,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   });
 
   async function assertSolvent() {
-    const vaultAcc = await getAccount(provider.connection, vault, "confirmed", TOKEN_PROGRAM_ID);
+    const vaultAcc = await getAccount(
+      provider.connection,
+      vault,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
     const balances = await program.account.balance.all();
     const channels = await program.account.channel.all();
 
@@ -148,64 +191,73 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
 
     expect(vaultAcc.amount.toString()).to.equal(
       (sumAvailable + sumLocked).toString(),
-      "solvency invariant violated",
+      "solvency invariant violated"
     );
   }
 
-  it("requires an explicit authorized signer", async () => {
-    await expectReject(
-      createChannel(payer, payee, PublicKey.default).rpc(),
-      /InvalidAuthorizedSigner/,
-    );
-  });
-
   it("refuses a self-channel", async () => {
     await expectReject(
-      createChannel(payer, payer, payer.owner.publicKey).rpc(),
-      /SelfChannelNotAllowed/,
+      createChannel(payer, payer).rpc(),
+      /SelfChannelNotAllowed/
     );
   });
 
   it("creates a channel with a derived signer and no payee involvement", async () => {
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
     // The real pattern: derive the signer for this channel from the agent wallet seed,
     // rather than registering an arbitrary throwaway key.
-    const signer = deriveArcisSigner(payer.owner.secretKey.slice(0, 32));
-    const signingKey = new PublicKey(signer.publicKey);
     const cfgBefore = await program.account.config.fetch(configPda);
-    await createChannel(payer, payee, signingKey).rpc();
+    await createChannel(payer, payee).rpc();
 
     const c = await program.account.channel.fetch(channel);
     // The id comes from the global counter and the counter advances by exactly one.
     expect(c.channelId.toString()).to.equal(cfgBefore.nextChannelId.toString());
     expect(c.channelId.toNumber()).to.be.greaterThan(0);
     const cfgAfter = await program.account.config.fetch(configPda);
-    expect(cfgAfter.nextChannelId.toNumber()).to.equal(cfgBefore.nextChannelId.toNumber() + 1);
+    expect(cfgAfter.nextChannelId.toNumber()).to.equal(
+      cfgBefore.nextChannelId.toNumber() + 1
+    );
     expect(c.payer.toBase58()).to.equal(payer.participant.toBase58());
     expect(c.payee.toBase58()).to.equal(payee.participant.toBase58());
     expect(c.mint.toBase58()).to.equal(mint.toBase58());
-    expect(c.authorizedSigner.toBase58()).to.equal(signingKey.toBase58());
+    expect(c.authorizedSigner.toBase58()).to.equal(payer.signer.toBase58());
     expect(c.settledCumulative.toNumber()).to.equal(0);
     expect(c.lockedBalance.toNumber()).to.equal(0);
 
     // And the registered signer is NOT the agent's wallet address.
-    expect(c.authorizedSigner.toBase58()).to.not.equal(payer.owner.publicKey.toBase58());
+    expect(c.authorizedSigner.toBase58()).to.not.equal(
+      payer.owner.publicKey.toBase58()
+    );
   });
 
   it("refuses a duplicate channel but allows the reverse direction", async () => {
-    await expectReject(createChannel(payer, payee, payer.owner.publicKey).rpc());
+    await expectReject(createChannel(payer, payee).rpc());
 
     // Unidirectional: (payee -> payer) is a different account entirely, with its own id.
-    await createChannel(payee, payer, payee.owner.publicKey).rpc();
-    const reverse = seeds.channel(program.programId, payee.participant, payer.participant, mint);
+    await createChannel(payee, payer).rpc();
+    const reverse = seeds.channel(
+      program.programId,
+      payee.participant,
+      payer.participant,
+      mint
+    );
     const c = await program.account.channel.fetch(reverse);
     expect(c.payer.toBase58()).to.equal(payee.participant.toBase58());
     const forward = await program.account.channel.fetch(
-      seeds.channel(program.programId, payer.participant, payee.participant, mint),
+      seeds.channel(
+        program.programId,
+        payer.participant,
+        payee.participant,
+        mint
+      )
     );
     expect(c.channelId.toNumber()).to.equal(forward.channelId.toNumber() + 1);
   });
-
 
   it("refuses a channel when the payee has no balance for the mint", async () => {
     // This is the forward-compatibility guard: v2 settlement cannot create accounts, so a
@@ -213,21 +265,44 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     const owner = Keypair.generate();
     await fund(provider, owner.publicKey, 3);
     const participant = seeds.participant(program.programId, owner.publicKey);
+    const signer = new PublicKey(
+      deriveArcisSigner(owner.secretKey.slice(0, 32)).publicKey
+    );
     await program.methods
-      .initializeParticipant()
-      .accounts({ owner: owner.publicKey, participant, systemProgram: SystemProgram.programId })
+      .initializeParticipant(signer)
+      .accounts({
+        owner: owner.publicKey,
+        config: configPda,
+        participant,
+        systemProgram: SystemProgram.programId,
+      })
       .signers([owner])
       .rpc();
     // Deliberately no openBalance.
     await expectReject(
-      createChannel(payer, { owner, participant, balance: seeds.balance(program.programId, participant, mint) }, payer.owner.publicKey, owner).rpc(),
+      createChannel(payer, {
+        owner,
+        participant,
+        balance: seeds.balance(program.programId, participant, mint),
+        signer,
+      }).rpc()
     );
   });
 
   it("locks funds, moving the ledger split without moving tokens", async () => {
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
     const balBefore = await program.account.balance.fetch(payer.balance);
-    const vaultBefore = await getAccount(provider.connection, vault, "confirmed", TOKEN_PROGRAM_ID);
+    const vaultBefore = await getAccount(
+      provider.connection,
+      vault,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
 
     await program.methods
       .lockChannelFunds(new anchor.BN(40 * ONE))
@@ -237,11 +312,20 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
 
     const balAfter = await program.account.balance.fetch(payer.balance);
     const c = await program.account.channel.fetch(channel);
-    const vaultAfter = await getAccount(provider.connection, vault, "confirmed", TOKEN_PROGRAM_ID);
+    const vaultAfter = await getAccount(
+      provider.connection,
+      vault,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
 
-    expect(balAfter.available.toNumber()).to.equal(balBefore.available.toNumber() - 40 * ONE);
+    expect(balAfter.available.toNumber()).to.equal(
+      balBefore.available.toNumber() - 40 * ONE
+    );
     expect(c.lockedBalance.toNumber()).to.equal(40 * ONE);
-    expect(vaultAfter.amount.toString()).to.equal(vaultBefore.amount.toString());
+    expect(vaultAfter.amount.toString()).to.equal(
+      vaultBefore.amount.toString()
+    );
     await assertSolvent();
   });
 
@@ -252,24 +336,37 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     // The payer's ATA already exists from the deposit in `makeParty`; derive it rather than
     // trying to create it again.
     const ata = getAssociatedTokenAddressSync(
-      mint, payer.owner.publicKey, false, TOKEN_PROGRAM_ID,
+      mint,
+      payer.owner.publicKey,
+      false,
+      TOKEN_PROGRAM_ID
     );
     await expectReject(
       program.methods
         .withdraw(new anchor.BN(b.available.toNumber() + 1))
         .accounts({
-          owner: payer.owner.publicKey, participant: payer.participant,
-          mint, tokenConfig, vault, balance: payer.balance, destination: ata,
+          owner: payer.owner.publicKey,
+          participant: payer.participant,
+          mint,
+          tokenConfig,
+          vault,
+          balance: payer.balance,
+          destination: ata,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([payer.owner])
         .rpc(),
-      /InsufficientBalance/,
+      /InsufficientBalance/
     );
   });
 
   it("refuses to lock more than is available and to unlock more than is locked", async () => {
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
     const b = await program.account.balance.fetch(payer.balance);
     await expectReject(
       program.methods
@@ -277,7 +374,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
         .accounts(payerOp(payer, channel))
         .signers([payer.owner])
         .rpc(),
-      /InsufficientBalance/,
+      /InsufficientBalance/
     );
     await expectReject(
       program.methods
@@ -285,12 +382,17 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
         .accounts(payerOp(payer, channel))
         .signers([payer.owner])
         .rpc(),
-      /InsufficientLockedBalance/,
+      /InsufficientLockedBalance/
     );
   });
 
   it("enforces the unlock timelock and pushes the deadline out on re-request", async () => {
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
 
     await program.methods
       .requestUnlockChannelFunds(new anchor.BN(10 * ONE))
@@ -306,7 +408,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
         .accounts(payerOp(payer, channel))
         .signers([payer.owner])
         .rpc(),
-      /ChannelUnlockLocked/,
+      /ChannelUnlockLocked/
     );
 
     await sleep(1200);
@@ -317,11 +419,18 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
       .rpc();
     const second = await program.account.channel.fetch(channel);
     expect(second.pendingUnlockAmount.toNumber()).to.equal(15 * ONE);
-    expect(second.pendingUnlockAt.toNumber()).to.be.greaterThan(first.pendingUnlockAt.toNumber());
+    expect(second.pendingUnlockAt.toNumber()).to.be.greaterThan(
+      first.pendingUnlockAt.toNumber()
+    );
   });
 
   it("releases min(pending, locked) and refuses a non-payer executor", async () => {
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
     await sleep((CHANNEL_TIMELOCK + 1) * 1000);
 
     const stranger = Keypair.generate();
@@ -329,9 +438,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     await expectReject(
       program.methods
         .executeUnlockChannelFunds()
-        .accounts({ ...payerOp(payer, channel), payerOwner: stranger.publicKey })
+        .accounts({
+          ...payerOp(payer, channel),
+          payerOwner: stranger.publicKey,
+        })
         .signers([stranger])
-        .rpc(),
+        .rpc()
     );
 
     const balBefore = await program.account.balance.fetch(payer.balance);
@@ -343,7 +455,9 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
 
     const balAfter = await program.account.balance.fetch(payer.balance);
     const c = await program.account.channel.fetch(channel);
-    expect(balAfter.available.toNumber()).to.equal(balBefore.available.toNumber() + 15 * ONE);
+    expect(balAfter.available.toNumber()).to.equal(
+      balBefore.available.toNumber() + 15 * ONE
+    );
     expect(c.lockedBalance.toNumber()).to.equal(25 * ONE);
     expect(c.pendingUnlockAmount.toNumber()).to.equal(0);
     expect(c.pendingUnlockAt.toNumber()).to.equal(0);
@@ -354,7 +468,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
         .accounts(payerOp(payer, channel))
         .signers([payer.owner])
         .rpc(),
-      /NoChannelUnlockPending/,
+      /NoChannelUnlockPending/
     );
     await assertSolvent();
   });
@@ -362,7 +476,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   it("cancels an outstanding unlock request when the payer locks more (no timelock bypass for re-locked funds)", async () => {
     // The attack this closes: request → (settlement drains the lock while the request matures)
     // → re-lock → execute immediately. Locking must void the request.
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
     await program.methods
       .requestUnlockChannelFunds(new anchor.BN(5 * ONE))
       .accounts(payerOp(payer, channel))
@@ -378,8 +497,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     expect(c.pendingUnlockAmount.toNumber()).to.equal(0);
     expect(c.pendingUnlockAt.toNumber()).to.equal(0);
     await expectReject(
-      program.methods.executeUnlockChannelFunds().accounts(payerOp(payer, channel)).signers([payer.owner]).rpc(),
-      /NoChannelUnlockPending/,
+      program.methods
+        .executeUnlockChannelFunds()
+        .accounts(payerOp(payer, channel))
+        .signers([payer.owner])
+        .rpc(),
+      /NoChannelUnlockPending/
     );
     // a fresh request starts a fresh timelock
     await program.methods
@@ -388,8 +511,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
       .signers([payer.owner])
       .rpc();
     await expectReject(
-      program.methods.executeUnlockChannelFunds().accounts(payerOp(payer, channel)).signers([payer.owner]).rpc(),
-      /ChannelUnlockLocked/,
+      program.methods
+        .executeUnlockChannelFunds()
+        .accounts(payerOp(payer, channel))
+        .signers([payer.owner])
+        .rpc(),
+      /ChannelUnlockLocked/
     );
     // restore the lock the next test expects (25): the extra 1 comes back cooperatively
     await program.methods
@@ -404,7 +531,9 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
       })
       .signers([payer.owner, payee.owner])
       .rpc();
-    expect((await program.account.channel.fetch(channel)).lockedBalance.toNumber()).to.equal(25 * ONE);
+    expect(
+      (await program.account.channel.fetch(channel)).lockedBalance.toNumber()
+    ).to.equal(25 * ONE);
     await assertSolvent();
   });
 
@@ -416,7 +545,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     // So whenever a request is outstanding, the lock can only have grown — `released` always equals
     // `pending`. The clamp goes live in v2, when settlement debits `locked_balance` without
     // touching the request; the partial-release and zero-release cases must be tested there.
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
 
     await program.methods
       .requestUnlockChannelFunds(new anchor.BN(25 * ONE))
@@ -462,7 +596,12 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
   });
 
   it("requires both signatures for a cooperative unlock", async () => {
-    const channel = seeds.channel(program.programId, payer.participant, payee.participant, mint);
+    const channel = seeds.channel(
+      program.programId,
+      payer.participant,
+      payee.participant,
+      mint
+    );
     await program.methods
       .lockChannelFunds(new anchor.BN(ONE))
       .accounts(payerOp(payer, channel))
@@ -481,7 +620,7 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
           payerBalance: payer.balance,
         })
         .signers([payer.owner]) // payee missing
-        .rpc(),
+        .rpc()
     );
     await assertSolvent();
   });

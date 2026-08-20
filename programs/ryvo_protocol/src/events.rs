@@ -40,6 +40,8 @@ pub struct TokenDepositEnabledChanged {
 pub struct ParticipantInitialized {
     pub participant: Pubkey,
     pub owner: Pubkey,
+    pub participant_id: u64,
+    pub authorized_signer: Pubkey,
 }
 
 #[event]
@@ -143,44 +145,23 @@ pub struct ChannelSettled {
 
 #[event]
 pub struct RouteSettled {
-    pub channel_ag: Pubkey,
-    pub channel_gp: Pubkey,
-    pub pool: Pubkey,
-    pub channel_ag_id: u64,
-    pub channel_gp_id: u64,
-    /// Agent → pool.
-    pub moved_ag: u64,
-    /// Pool → provider.
-    pub moved_gp: u64,
+    pub source_channel: Pubkey,
+    pub source_channel_id: u64,
+    pub base_cumulative: u64,
+    pub target_cumulative: u64,
+    pub moved: u64,
+    pub provider_paid: u64,
+    pub gateway_fee: u64,
+    pub allocation_count: u8,
 }
 
 #[event]
-pub struct RoutePoolOpened {
-    pub pool: Pubkey,
-    pub participant: Pubkey,
-    pub mint: Pubkey,
-}
-
-#[event]
-pub struct RoutePoolFunded {
-    pub pool: Pubkey,
+pub struct RouteProviderPaid {
+    pub source_channel: Pubkey,
+    pub source_channel_id: u64,
+    pub provider: Pubkey,
+    pub participant_id: u64,
     pub amount: u64,
-    pub balance: u64,
-    pub cancelled_unlock: u64,
-}
-
-#[event]
-pub struct RoutePoolUnlockRequested {
-    pub pool: Pubkey,
-    pub requested_amount: u64,
-    pub unlock_at: i64,
-}
-
-#[event]
-pub struct RoutePoolUnlocked {
-    pub pool: Pubkey,
-    pub released_amount: u64,
-    pub remaining: u64,
 }
 
 /// The relayer reset or closed a buffer whose batch was not done (callback missing, or verified

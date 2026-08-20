@@ -7,10 +7,9 @@ pay off-chain, then settle + close. Two variants:
   unilateral:  open 1 tx, submit state 1 tx, close after challenge -> 3 tx per channel-day
 Rent of the channel account is returned on close, so it is churn, not cost.
 
-Ryvo: the agent keeps ONE channel to the gateway (opened once, topped up now and then) and the
-gateway keeps one channel per provider; a day's 3 payments are 3 route commitments that ride in
-the batches the relayer clears anyway. Per agent-day we charge 3/N of a batch's transactions and
-Arcium fee, plus the amortised lock top-up. Inputs from scripts/model-scaling.py (measured devnet).
+Ryvo: the agent keeps one channel to the gateway. One daily commitment contains all 3 provider
+allocations and both signatures. There are no gateway-to-provider channels or pool. Per agent-day
+we charge 1/N of a batch plus the amortised lock top-up.
 """
 SOL_USD = 77.0
 BASE_FEE = 5000
@@ -18,7 +17,7 @@ ARCIUM_FEE = 10_045
 PROVIDERS = 3
 TOPUPS_PER_DAY = 1 / 7            # agent locks more funds once a week (1 tx)
 OPEN_CU, SETTLE_CLOSE_CU = 15_000, 20_000   # est: account creation + transfer; signed-state check + 2 writes + close
-ROUTE_CU = 171_363 / 39           # measured settle CU per route
+ROUTE_CU = 5_000                  # estimated for one source + gateway + 3 provider balance writes
 STAGE_CU, QUEUE_CU, CALLBACK_CU = 10_232, 177_007, 30_000  # measured / est
 
 def one_to_one(tx_per_channel_day, cu_per_channel_day):
@@ -26,9 +25,9 @@ def one_to_one(tx_per_channel_day, cu_per_channel_day):
 
 def ryvo(N, stage_tx, settle_tx):
     per_batch_tx = stage_tx + 1 + 1 + settle_tx
-    share = PROVIDERS / N
+    share = 1 / N
     tx = per_batch_tx * share + TOPUPS_PER_DAY
-    cu = (stage_tx * STAGE_CU + QUEUE_CU + CALLBACK_CU) * share + PROVIDERS * ROUTE_CU + TOPUPS_PER_DAY * 8_000
+    cu = (stage_tx * STAGE_CU + QUEUE_CU + CALLBACK_CU) * share + ROUTE_CU + TOPUPS_PER_DAY * 8_000
     fee = ARCIUM_FEE * share
     return tx, cu, fee
 
@@ -38,9 +37,9 @@ def usd(tx, cu, fee, prio):
 rows = [
     ("1:1 cooperative close (open, settle+close)", one_to_one(2, OPEN_CU + SETTLE_CLOSE_CU)),
     ("1:1 unilateral close (open, submit state, close)", one_to_one(3, OPEN_CU + SETTLE_CLOSE_CU + 8_000)),
-    ("Ryvo today: N=64, legacy tx, 64 locks (20 tx/batch)", ryvo(64, 16, 2)),
-    ("Ryvo + v1 + 128 locks (7 tx/batch)", ryvo(64, 4, 1)),
-    ("Ryvo + off-chain inputs + v1 + 128 locks, N=64 (3 tx/batch)", ryvo(64, 0, 1)),
+    ("Ryvo today: one 3-provider commitment, N=32 (11 tx/batch)", ryvo(32, 8, 1)),
+    ("Ryvo + v1: one 3-provider commitment, N=32 (5 tx/batch)", ryvo(32, 2, 1)),
+    ("Ryvo + off-chain inputs + v1, N=32 (3 tx/batch)", ryvo(32, 0, 1)),
     ("Ryvo + off-chain inputs + v1 + 128 locks, N=256 (5 tx/batch)", ryvo(256, 0, 3)),
 ]
 base = rows[0][1]

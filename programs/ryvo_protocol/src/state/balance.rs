@@ -21,8 +21,11 @@ pub struct Balance {
     /// The `Participant` PDA this balance belongs to.
     pub participant: Pubkey,
     pub mint: Pubkey,
+    /// Copy of the participant's permanent id, so routed settlement can bind a compact signed id
+    /// directly to this balance without loading a separate Participant account.
+    pub participant_id: u64,
     /// Spendable or withdrawable right now. Nothing else has a claim on it.
     pub available: u64,
     pub bump: u8,
-    pub _reserved: [u8; 96],
+    pub _reserved: [u8; 88],
 }

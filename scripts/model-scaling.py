@@ -15,22 +15,22 @@ BASE_FEE = 5000               # lamports per signature
 LEGACY_TX_BYTES = 1232
 V1_TX_BYTES = 4096            # transaction v1 (gate not yet active on devnet)
 
-# dense record bytes on the wire: data + 33 B per channel account (key + index)
-ROUTE_WIRE = 160 + 2 * 33     # 226
+# one-provider route: compact data (153 + 16) + one source channel account.
+# The gateway Participant is shared once per staging instruction and sits in TX_OVERHEAD.
+ROUTE_WIRE = 169 + 33         # 202
 UNI_WIRE = 80 + 33            # 113
 TX_OVERHEAD = 217             # signature, header, 3 fixed accounts, blockhash, ix framing (legacy)
 def records_per_tx(wire, tx_bytes, extra=0):
     return (tx_bytes - TX_OVERHEAD - extra) // wire
 
-# measured on devnet 2026-08-19 with the N=64 dense build (scripts/devnet-costs.ts, scripts/seal-tx-detail.ts):
-# 100 routes = 2 batches = 32 wallet tx + 2 callbacks; 64-route batch = 16 stage + seal + callback + 2 settle = 20 tx
-ARCIUM_FEE_LAMPORTS = 10_045                # paid to the Arcium fee pool per computation (devnet price; 64-route batch; 32-route was 10,023)
+# Existing fee measurements; the new 32-commitment route circuit must be remeasured on devnet.
+ARCIUM_FEE_LAMPORTS = 10_023
 COMPUTATION_RENT_LAMPORTS = 5_679_360       # 678-byte computation account; reclaimed in the next seal tx (net zero in steady state)
-SETTLE_CU_PER_ROUTE = 171_363 / 39          # 4,394 (39 routes, 64 unique accounts, one v0 tx)
-SETTLE_ROUTES_PER_TX = 38                   # tx account-lock limit is 64 (the 128 feature is inactive on devnet and mainnet): 38 agent channels + 10 gateway channels + 10 balances + pool + 5
+SETTLE_CU_PER_ROUTE = 3_000                 # estimate until the new direct-credit path is measured
+SETTLE_ROUTES_PER_TX = 32                   # whole fixed route batch: 32 sources + shared balances
 SETTLE_UNI_PER_TX = 58                      # 58 channels + 1 shared payee balance + 5 (lock limit)
 STAGE_TX_CU = 10_232                        # measured: 4 routes packed on-chain per tx
-QUEUE_TX_CU = 177_007                       # measured (seal + pad + Arcium CPI, N=64)
+QUEUE_TX_CU = 177_007                       # prior measurement; remeasure for the new N=32 route circuit
 OPEN_TX_CU = 12_000                         # est
 CLOSE_TX_CU = 6_000                         # est
 ONE_TO_ONE_CU = 15_000                      # est: one channel settlement tx with a sig check + 2 writes
@@ -82,8 +82,8 @@ N_REC = 1000
 print(f"Per {N_REC:,} channel settlements. Ratio in parentheses = 1:1 cost / Ryvo cost. USD at SOL ${SOL_USD:.0f}.")
 print("Ryvo columns include the Arcium computation fee (devnet price); computation-account rent is reclaimed in-flow, so excluded.")
 print("Priority fee columns: none | 0.01 lamport/CU (moderate) | 1 lamport/CU (heavy)\n")
-for kind, base_settlements in (("route", 2), ("unilateral", 1)):
-    print(f"### {kind} ({'2 channel settlements per route' if kind=='route' else '1 channel settlement'})")
+for kind, base_settlements in (("route", 1), ("unilateral", 1)):
+    print(f"### {kind} (compared with one direct channel settlement per payment)")
     print("| configuration | tx | CU | no priority | moderate | heavy |")
     print("|---|---|---|---|---|---|")
     b_tx = N_REC * base_settlements
@@ -93,9 +93,9 @@ for kind, base_settlements in (("route", 2), ("unilateral", 1)):
     configs = [
         ("first deployment: N=32, slot staging, keys staged, open/close per batch", 32, LEGACY_TX_BYTES, "first", False, 32),
         ("previous: N=64 uni / 32 route, keys copied on-chain, buffer reuse",       32 if kind == "route" else 64, LEGACY_TX_BYTES, "prev", True, 32),
-        ("NOW: N=64, dense records, on-chain padding (measured)",                  64, LEGACY_TX_BYTES, "dense", True, settle_per),
-        ("NOW + transaction v1 (client ready; gate pending)",                       64, V1_TX_BYTES, "dense", True, settle_per),
-        ("NOW + v1 + 128 account locks (whole batch settles in one tx)",            64, V1_TX_BYTES, "dense", True, 64),
+        ("NOW: N=32 route / N=64 unilateral, compact records",                      32 if kind == "route" else 64, LEGACY_TX_BYTES, "dense", True, settle_per),
+        ("NOW + transaction v1",                                                     32 if kind == "route" else 64, V1_TX_BYTES, "dense", True, settle_per),
+        ("NOW + v1 + 128 account locks",                                             32 if kind == "route" else 64, V1_TX_BYTES, "dense", True, 64),
         # hypothetical: Arcium sources inputs off-chain (no staging at all); settle carries ids+targets as data
         ("OFF-CHAIN INPUTS, legacy tx, 64 locks, N=64",                             64, LEGACY_TX_BYTES, "offchain", True, 28 if kind == "route" else 54),
         ("OFF-CHAIN INPUTS + v1 + 128 locks, N=64",                                 64, V1_TX_BYTES, "offchain", True, 64),

@@ -77,8 +77,11 @@ pub mod ryvo_protocol {
 
     /// Register a permanent identity. Never recycled: the PDA derives from the owner and there is
     /// no close instruction.
-    pub fn initialize_participant(ctx: Context<InitializeParticipant>) -> Result<()> {
-        instructions::participant::initialize_participant_handler(ctx)
+    pub fn initialize_participant(
+        ctx: Context<InitializeParticipant>,
+        authorized_signer: Pubkey,
+    ) -> Result<()> {
+        instructions::participant::initialize_participant_handler(ctx, authorized_signer)
     }
 
     // --- balances ---
@@ -99,19 +102,16 @@ pub mod ryvo_protocol {
 
     // --- channels ---
 
-    /// Open a one-way channel. `authorized_signer` is required, not defaulted — see the handler.
-    pub fn create_channel(ctx: Context<CreateChannel>, authorized_signer: Pubkey) -> Result<()> {
-        instructions::channel::create_channel_handler(ctx, authorized_signer)
+    /// Open a one-way channel using the payer participant's immutable Arcis signer.
+    pub fn create_channel(ctx: Context<CreateChannel>) -> Result<()> {
+        instructions::channel::create_channel_handler(ctx)
     }
 
     pub fn lock_channel_funds(ctx: Context<PayerChannelOp>, amount: u64) -> Result<()> {
         instructions::channel::lock_channel_funds_handler(ctx, amount)
     }
 
-    pub fn request_unlock_channel_funds(
-        ctx: Context<PayerChannelOp>,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn request_unlock_channel_funds(ctx: Context<PayerChannelOp>, amount: u64) -> Result<()> {
         instructions::channel::request_unlock_channel_funds_handler(ctx, amount)
     }
 
@@ -127,24 +127,6 @@ pub mod ryvo_protocol {
         amount: u64,
     ) -> Result<()> {
         instructions::channel::cooperative_unlock_channel_funds_handler(ctx, amount)
-    }
-
-    // --- route pools (gateway float) ---
-
-    pub fn open_route_pool(ctx: Context<OpenRoutePool>) -> Result<()> {
-        instructions::pool::open_route_pool_handler(ctx)
-    }
-
-    pub fn fund_route_pool(ctx: Context<PoolOp>, amount: u64) -> Result<()> {
-        instructions::pool::fund_route_pool_handler(ctx, amount)
-    }
-
-    pub fn request_pool_unlock(ctx: Context<PoolOp>, amount: u64) -> Result<()> {
-        instructions::pool::request_pool_unlock_handler(ctx, amount)
-    }
-
-    pub fn execute_pool_unlock(ctx: Context<PoolOp>) -> Result<()> {
-        instructions::pool::execute_pool_unlock_handler(ctx)
     }
 
     // --- clearing: one-time setup ---
@@ -178,7 +160,7 @@ pub mod ryvo_protocol {
         let source = circuit_url.map(|url| {
             CircuitSource::OffChain(OffChainCircuitSource {
                 source: url,
-                hash: circuit_hash!("clear_route64"),
+                hash: circuit_hash!("clear_route32"),
             })
         });
         init_computation_def(ctx.accounts, source)?;
@@ -214,7 +196,13 @@ pub mod ryvo_protocol {
         callback_cu_limit: u32,
         cu_price_micro: u64,
     ) -> Result<()> {
-        clearing::seal_and_queue_unilateral_handler(ctx, computation_offset, count, callback_cu_limit, cu_price_micro)
+        clearing::seal_and_queue_unilateral_handler(
+            ctx,
+            computation_offset,
+            count,
+            callback_cu_limit,
+            cu_price_micro,
+        )
     }
 
     /// `callback_cu_limit` / `cu_price_micro` are passed through to Arcium (0 = node default /
@@ -226,7 +214,13 @@ pub mod ryvo_protocol {
         callback_cu_limit: u32,
         cu_price_micro: u64,
     ) -> Result<()> {
-        clearing::seal_and_queue_route_handler(ctx, computation_offset, count, callback_cu_limit, cu_price_micro)
+        clearing::seal_and_queue_route_handler(
+            ctx,
+            computation_offset,
+            count,
+            callback_cu_limit,
+            cu_price_micro,
+        )
     }
 
     // --- clearing: callbacks (invoked by Arcium) ---
@@ -244,7 +238,10 @@ pub mod ryvo_protocol {
         )? {
             // Ours, but not the batch in flight: let Arcium finalize it (so the rent is
             // reclaimable) and record nothing.
-            emit!(StaleCallbackIgnored { clearing_result: ctx.accounts.clearing_result.key(), computation_account: ctx.accounts.computation_account.key() });
+            emit!(StaleCallbackIgnored {
+                clearing_result: ctx.accounts.clearing_result.key(),
+                computation_account: ctx.accounts.computation_account.key()
+            });
             return Ok(());
         }
         if let SignedComputationOutputs::Failure(_) = output {
@@ -260,10 +257,10 @@ pub mod ryvo_protocol {
         clearing::record_bitmap(&mut ctx.accounts.clearing_result, &bits, KIND_UNILATERAL)
     }
 
-    #[arcium_callback(encrypted_ix = "clear_route64")]
-    pub fn clear_route64_callback(
-        ctx: Context<ClearRoute64Callback>,
-        output: SignedComputationOutputs<ClearRoute64Output>,
+    #[arcium_callback(encrypted_ix = "clear_route32")]
+    pub fn clear_route32_callback(
+        ctx: Context<ClearRoute32Callback>,
+        output: SignedComputationOutputs<ClearRoute32Output>,
     ) -> Result<()> {
         if let clearing::CallbackMatch::Stale = clearing::require_current_computation(
             &ctx.accounts.clearing_result,
@@ -273,7 +270,10 @@ pub mod ryvo_protocol {
         )? {
             // Ours, but not the batch in flight: let Arcium finalize it (so the rent is
             // reclaimable) and record nothing.
-            emit!(StaleCallbackIgnored { clearing_result: ctx.accounts.clearing_result.key(), computation_account: ctx.accounts.computation_account.key() });
+            emit!(StaleCallbackIgnored {
+                clearing_result: ctx.accounts.clearing_result.key(),
+                computation_account: ctx.accounts.computation_account.key()
+            });
             return Ok(());
         }
         if let SignedComputationOutputs::Failure(_) = output {
@@ -283,7 +283,7 @@ pub mod ryvo_protocol {
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
         ) {
-            Ok(ClearRoute64Output { field_0 }) => field_0,
+            Ok(ClearRoute32Output { field_0 }) => field_0,
             Err(_) => return Err(RyvoError::AbortedComputation.into()),
         };
         clearing::record_bitmap(&mut ctx.accounts.clearing_result, &bits, KIND_ROUTE)

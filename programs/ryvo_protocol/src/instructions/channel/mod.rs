@@ -87,19 +87,11 @@ pub struct CreateChannel<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn create_channel_handler(
-    ctx: Context<CreateChannel>,
-    authorized_signer: Pubkey,
-) -> Result<()> {
+pub fn create_channel_handler(ctx: Context<CreateChannel>) -> Result<()> {
     require!(
         ctx.accounts.payer_participant.key() != ctx.accounts.payee_participant.key(),
         RyvoError::SelfChannelNotAllowed
     );
-    require!(
-        authorized_signer != Pubkey::default(),
-        RyvoError::InvalidAuthorizedSigner
-    );
-
     let config = &mut ctx.accounts.config;
     let channel_id = config.next_channel_id;
     config.next_channel_id = channel_id.checked_add(1).ok_or(RyvoError::MathOverflow)?;
@@ -109,6 +101,7 @@ pub fn create_channel_handler(
     channel.payer = ctx.accounts.payer_participant.key();
     channel.payee = ctx.accounts.payee_participant.key();
     channel.mint = ctx.accounts.mint.key();
+    let authorized_signer = ctx.accounts.payer_participant.authorized_signer;
     channel.authorized_signer = authorized_signer;
     channel.signer_slots = crate::commitment::pack_pubkey(&authorized_signer.to_bytes());
     channel.settled_cumulative = 0;
@@ -212,7 +205,10 @@ pub fn lock_channel_funds_handler(ctx: Context<PayerChannelOp>, amount: u64) -> 
         locked_balance: channel.locked_balance,
     });
     if cancelled > 0 {
-        emit!(ChannelUnlockCancelled { channel: channel.key(), cancelled_amount: cancelled });
+        emit!(ChannelUnlockCancelled {
+            channel: channel.key(),
+            cancelled_amount: cancelled
+        });
     }
     Ok(())
 }

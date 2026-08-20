@@ -1,16 +1,13 @@
-/**
- * Step 9: end-to-end Arcium clearing on the localnet — stage, queue, MPC verify, callback,
- * settle — for both record kinds, including the failure modes settlement must tolerate.
- *
- * Runs under `arcium test` only (needs the 2-node ARX localnet). Circuits are uploaded on-chain
- * (fast on localnet: parallel chunks). ARX nodes refuse private-address URLs (SSRF guard), so a
- * local HTTP server cannot serve them; set RYVO_CIRCUIT_BASE_URL to a public URL to exercise the
- * off-chain path used on devnet.
- */
+/** End-to-end Arcium clearing on localnet. */
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, createAssociatedTokenAccount, mintTo, getAccount } from "@solana/spl-token";
+import {
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccount,
+  getAccount,
+  mintTo,
+} from "@solana/spl-token";
 import { expect } from "chai";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import {
@@ -21,8 +18,8 @@ import {
   localWallet,
   newMint,
   protocolAuthority,
-  setupProvider,
   seeds,
+  setupProvider,
 } from "../tests/shared";
 import {
   KIND_ROUTE,
@@ -47,7 +44,6 @@ import {
   ensureArciumSigner,
   ensureCompDef,
   openStaging,
-  routePoolPda,
   sealAndQueue,
   settle,
   stageBatch,
@@ -59,7 +55,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   const provider = setupProvider();
   const program = anchor.workspace.RyvoProtocol as Program<RyvoProtocol>;
   const authority = protocolAuthority();
-  const relayer = localWallet(); // the local wallet plays relayer
+  const relayer = localWallet();
   const configPda = seeds.config(program.programId);
   const domain = deriveMessageDomain(program.programId, CHAIN_ID);
 
@@ -70,10 +66,12 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   interface Party {
     owner: Keypair;
     participant: PublicKey;
+    participantId: bigint;
     balance: PublicKey;
-    seed: Uint8Array; // wallet seed -> Arcis signer
-    signer: Buffer; // Arcis pubkey
+    seed: Uint8Array;
+    signer: Buffer;
   }
+
   interface Chan {
     key: PublicKey;
     id: bigint;
@@ -84,120 +82,251 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   let agents: Party[] = [];
   let gateway: Party;
   let providers: Party[] = [];
-  const chanAG: Chan[] = []; // agent i -> gateway
-  const chanGP: Chan[] = []; // gateway -> provider j
-  /** The relayer's one reusable staging buffer, opened in `before`, closed at the end. */
+  const chanAG: Chan[] = [];
   let staging: PublicKey;
-  let gatewayPool: PublicKey;
-  const poolBalance = async () => (await program.account.routePool.fetch(gatewayPool)).balance.toNumber();
   let firstBatch = true;
-  /** The previous batch's computation; its rent is reclaimed in the next batch's first tx. */
   let lastComputation: anchor.BN | undefined;
 
-  async function makeParty(deposit = 0): Promise<Party> {
+  async function makeParty(
+    deposit = 0,
+    signerOverride?: PublicKey
+  ): Promise<Party> {
     const owner = Keypair.generate();
     await fund(provider, owner.publicKey, 5);
     const participant = seeds.participant(program.programId, owner.publicKey);
+    const seed = owner.secretKey.slice(0, 32);
+    const signer = deriveArcisSigner(seed).publicKey;
     await program.methods
-      .initializeParticipant()
-      .accounts({ owner: owner.publicKey, participant, systemProgram: SystemProgram.programId })
-      .signers([owner]).rpc();
+      .initializeParticipant(signerOverride ?? new PublicKey(signer))
+      .accounts({
+        owner: owner.publicKey,
+        config: configPda,
+        participant,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+    const participantAccount = await program.account.participant.fetch(
+      participant
+    );
     const balance = seeds.balance(program.programId, participant, mint);
     await program.methods
       .openBalance()
-      .accounts({ payer: owner.publicKey, participant, mint, tokenConfig, balance, systemProgram: SystemProgram.programId })
-      .signers([owner]).rpc();
+      .accounts({
+        payer: owner.publicKey,
+        participant,
+        mint,
+        tokenConfig,
+        balance,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
     if (deposit > 0) {
-      const ata = await createAssociatedTokenAccount(provider.connection, relayer, mint, owner.publicKey, { commitment: "confirmed" }, TOKEN_PROGRAM_ID);
-      await mintTo(provider.connection, relayer, mint, ata, relayer, deposit, [], { commitment: "confirmed" }, TOKEN_PROGRAM_ID);
+      const ata = await createAssociatedTokenAccount(
+        provider.connection,
+        relayer,
+        mint,
+        owner.publicKey,
+        { commitment: "confirmed" },
+        TOKEN_PROGRAM_ID
+      );
+      await mintTo(
+        provider.connection,
+        relayer,
+        mint,
+        ata,
+        relayer,
+        deposit,
+        [],
+        { commitment: "confirmed" },
+        TOKEN_PROGRAM_ID
+      );
       await program.methods
         .deposit(new anchor.BN(deposit))
-        .accounts({ funder: owner.publicKey, mint, tokenConfig, vault, funderTokenAccount: ata, participant, balance, tokenProgram: TOKEN_PROGRAM_ID })
-        .signers([owner]).rpc();
+        .accounts({
+          funder: owner.publicKey,
+          mint,
+          tokenConfig,
+          vault,
+          funderTokenAccount: ata,
+          participant,
+          balance,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([owner])
+        .rpc();
     }
-    const seed = owner.secretKey.slice(0, 32);
-    const signer = deriveArcisSigner(seed).publicKey;
-    return { owner, participant, balance, seed, signer };
+    return {
+      owner,
+      participant,
+      participantId: BigInt(participantAccount.participantId.toString()),
+      balance,
+      seed,
+      signer,
+    };
   }
 
   async function openChannel(from: Party, to: Party): Promise<Chan> {
-    const key = seeds.channel(program.programId, from.participant, to.participant, mint);
+    const key = seeds.channel(
+      program.programId,
+      from.participant,
+      to.participant,
+      mint
+    );
     await program.methods
-      .createChannel(new PublicKey(from.signer))
+      .createChannel()
       .accounts({
-        payerOwner: from.owner.publicKey, config: configPda,
-        payerParticipant: from.participant, payeeParticipant: to.participant,
-        mint, tokenConfig, payerBalance: from.balance, payeeBalance: to.balance,
-        channel: key, systemProgram: SystemProgram.programId,
+        payerOwner: from.owner.publicKey,
+        config: configPda,
+        payerParticipant: from.participant,
+        payeeParticipant: to.participant,
+        mint,
+        tokenConfig,
+        payerBalance: from.balance,
+        payeeBalance: to.balance,
+        channel: key,
+        systemProgram: SystemProgram.programId,
       })
-      .signers([from.owner]).rpc();
-    const c = await program.account.channel.fetch(key);
-    return { key, id: BigInt(c.channelId.toString()), payer: from, payee: to };
+      .signers([from.owner])
+      .rpc();
+    const channel = await program.account.channel.fetch(key);
+    return {
+      key,
+      id: BigInt(channel.channelId.toString()),
+      payer: from,
+      payee: to,
+    };
   }
 
-  async function lock(ch: Chan, amount: number) {
+  async function lock(channel: Chan, amount: number) {
     await program.methods
       .lockChannelFunds(new anchor.BN(amount))
-      .accounts({ payerOwner: ch.payer.owner.publicKey, payerParticipant: ch.payer.participant, config: configPda, channel: ch.key, payerBalance: ch.payer.balance })
-      .signers([ch.payer.owner]).rpc();
+      .accounts({
+        payerOwner: channel.payer.owner.publicKey,
+        payerParticipant: channel.payer.participant,
+        config: configPda,
+        channel: channel.key,
+        payerBalance: channel.payer.balance,
+      })
+      .signers([channel.payer.owner])
+      .rpc();
   }
 
-  const uni = (ch: Chan, target: number): UnilateralCommitment => ({
-    kind: KIND_UNILATERAL, messageDomain: domain, channelId: ch.id, targetCumulative: BigInt(target),
+  const uni = (channel: Chan, target: number): UnilateralCommitment => ({
+    kind: KIND_UNILATERAL,
+    messageDomain: domain,
+    channelId: channel.id,
+    targetCumulative: BigInt(target),
   });
-  const route = (ag: Chan, gp: Chan, targetAg: number, targetGp: number): RouteCommitment => ({
-    kind: KIND_ROUTE, messageDomain: domain,
-    channelAgId: ag.id, channelGpId: gp.id, targetAg: BigInt(targetAg), targetGp: BigInt(targetGp),
+
+  const route = (
+    source: Chan,
+    base: number,
+    target: number,
+    allocations: { provider: Party; amount: number }[]
+  ): RouteCommitment => ({
+    kind: KIND_ROUTE,
+    messageDomain: domain,
+    sourceChannelId: source.id,
+    baseCumulative: BigInt(base),
+    targetCumulative: BigInt(target),
+    allocations: allocations.map(({ provider, amount }) => ({
+      participantId: provider.participantId,
+      amount: BigInt(amount),
+    })),
   });
-  const uniRecord = (ch: Chan, target: number, corrupt = false): UnilateralRecord => {
-    const s = signCommitment(ch.payer.seed, uni(ch, target));
-    const signature = Buffer.from(s.signature);
+
+  const uniRecord = (
+    channel: Chan,
+    target: number,
+    corrupt = false
+  ): UnilateralRecord => {
+    const commitment = uni(channel, target);
+    const signed = signCommitment(channel.payer.seed, commitment);
+    const signature = Buffer.from(signed.signature);
     if (corrupt) signature[3] ^= 0xff;
-    return { commitment: uni(ch, target), channel: ch.key, signature };
-  };
-  const routeRecord = (ag: Chan, gp: Chan, targetAg: number, targetGp: number, corruptGateway = false): RouteRecord => {
-    const c = route(ag, gp, targetAg, targetGp);
-    const a = signCommitment(ag.payer.seed, c);
-    const g = signCommitment(gp.payer.seed, c);
-    const gatewaySignature = Buffer.from(g.signature);
-    if (corruptGateway) gatewaySignature[10] ^= 0x01;
-    return { commitment: c, channelAg: ag.key, channelGp: gp.key, agentSignature: a.signature, gatewaySignature };
+    return { commitment, channel: channel.key, signature };
   };
 
-  async function chan(ch: Chan) {
-    const c = await program.account.channel.fetch(ch.key);
-    return { settled: c.settledCumulative.toNumber(), locked: c.lockedBalance.toNumber() };
+  const routeRecord = (
+    source: Chan,
+    base: number,
+    target: number,
+    allocations: { provider: Party; amount: number }[],
+    corruptGateway = false,
+    signingGateway = gateway
+  ): RouteRecord => {
+    const commitment = route(source, base, target, allocations);
+    const agent = signCommitment(source.payer.seed, commitment);
+    const gatewaySigned = signCommitment(signingGateway.seed, commitment);
+    const gatewaySignature = Buffer.from(gatewaySigned.signature);
+    if (corruptGateway) gatewaySignature[10] ^= 1;
+    return {
+      commitment,
+      sourceChannel: source.key,
+      agentSignature: agent.signature,
+      gatewaySignature,
+    };
+  };
+
+  async function channelState(channel: Chan) {
+    const state = await program.account.channel.fetch(channel.key);
+    return {
+      settled: state.settledCumulative.toNumber(),
+      locked: state.lockedBalance.toNumber(),
+    };
   }
-  async function avail(p: Party) {
-    return (await program.account.balance.fetch(p.balance)).available.toNumber();
+
+  async function available(party: Party) {
+    return (
+      await program.account.balance.fetch(party.balance)
+    ).available.toNumber();
   }
+
   async function assertSolvent() {
-    const vaultAcc = await getAccount(provider.connection, vault, "confirmed", TOKEN_PROGRAM_ID);
+    const vaultAccount = await getAccount(
+      provider.connection,
+      vault,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
     const balances = await program.account.balance.all();
     const channels = await program.account.channel.all();
-    const sumAvailable = balances.filter((b) => b.account.mint.equals(mint)).reduce((a, b) => a + BigInt(b.account.available.toString()), 0n);
-    const sumLocked = channels.filter((c) => c.account.mint.equals(mint)).reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
-    const pools = await program.account.routePool.all();
-    const sumPool = pools.filter((p) => p.account.mint.equals(mint)).reduce((a, p) => a + BigInt(p.account.balance.toString()), 0n);
-    expect(vaultAcc.amount.toString()).to.equal((sumAvailable + sumLocked + sumPool).toString(), "solvency invariant violated");
+    const sumAvailable = balances
+      .filter((b) => b.account.mint.equals(mint))
+      .reduce((sum, b) => sum + BigInt(b.account.available.toString()), 0n);
+    const sumLocked = channels
+      .filter((c) => c.account.mint.equals(mint))
+      .reduce((sum, c) => sum + BigInt(c.account.lockedBalance.toString()), 0n);
+    expect(vaultAccount.amount.toString()).to.equal(
+      (sumAvailable + sumLocked).toString(),
+      "solvency invariant violated"
+    );
   }
 
-  /** Stage into the shared buffer (resetting it) + queue + wait; returns the bitmap. */
   async function clear(kind: number, batch: Batch, count: number) {
-    const t0 = Date.now();
-    const { sealPre, txCount, tailRecords } = await stageBatch(program, relayer, staging, batch, { fresh: firstBatch, reclaim: lastComputation });
+    const { sealPre } = await stageBatch(program, relayer, staging, batch, {
+      fresh: firstBatch,
+      reclaim: lastComputation,
+    });
     firstBatch = false;
-    const { computationOffset, clearingResult } = await sealAndQueue(program, relayer, staging, kind, count, sealPre);
+    const { computationOffset, clearingResult } = await sealAndQueue(
+      program,
+      relayer,
+      staging,
+      kind,
+      count,
+      sealPre
+    );
     lastComputation = computationOffset;
     await awaitClearing(provider, program, computationOffset);
-    const r = await program.account.clearingResult.fetch(clearingResult);
-    console.log(`      [clear] kind=${kind} count=${count} verified=${r.verified} bits=${JSON.stringify(bitmapBits(r.bitmap as number[], count))} staging tx=${txCount + 1}${tailRecords ? ` (${tailRecords} records ride in the seal tx)` : ""} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-    if (!r.verified) {
-      throw new Error(r.failed
-        ? "computation FAILED (BatchClearingFailed) — check artifacts/arx_node_logs (circuit fetch?)"
-        : "callback did not land — check artifacts/arx_node_logs");
-    }
-    return { bits: bitmapBits(r.bitmap as number[], count) };
+    const result = await program.account.clearingResult.fetch(clearingResult);
+    if (!result.verified)
+      throw new Error(
+        result.failed ? "computation failed" : "callback missing"
+      );
+    return bitmapBits(result.bitmap as number[], count);
   }
 
   before(async () => {
@@ -207,286 +336,397 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     vault = seeds.vault(program.programId, mint);
     await program.methods
       .registerToken()
-      .accounts({ authority: authority.publicKey, config: configPda, mint, tokenConfig, vault, tokenProgram: TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId, rent: anchor.web3.SYSVAR_RENT_PUBKEY })
-      .signers([authority]).rpc();
+      .accounts({
+        authority: authority.publicKey,
+        config: configPda,
+        mint,
+        tokenConfig,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      })
+      .signers([authority])
+      .rpc();
 
     await ensureArciumSigner(program, relayer);
+    const baseUrl = process.env.RYVO_CIRCUIT_BASE_URL;
+    await ensureCompDef(
+      program,
+      provider,
+      relayer,
+      "clear_unilateral64",
+      baseUrl && `${baseUrl}/clear_unilateral64.arcis`
+    );
+    await ensureCompDef(
+      program,
+      provider,
+      relayer,
+      "clear_route32",
+      baseUrl && `${baseUrl}/clear_route32.arcis`
+    );
 
-    const baseUrl: string | undefined = process.env.RYVO_CIRCUIT_BASE_URL;
-    const t0 = Date.now();
-    // comp defs can only be registered by the MXE authority (Arcium enforces it): the local wallet
-    await ensureCompDef(program, provider, relayer, "clear_unilateral64", baseUrl && `${baseUrl}/clear_unilateral64.arcis`);
-    await ensureCompDef(program, provider, relayer, "clear_route64", baseUrl && `${baseUrl}/clear_route64.arcis`);
-    console.log(`      comp defs ready in ${((Date.now() - t0) / 1000).toFixed(1)}s (${baseUrl ? "off-chain URL" : "on-chain upload"})`);
-
-    agents = [await makeParty(100 * ONE), await makeParty(100 * ONE), await makeParty(100 * ONE)];
-    gateway = await makeParty(0);
-    providers = [await makeParty(0), await makeParty(0)];
-    for (const a of agents) chanAG.push(await openChannel(a, gateway));
-    for (const p of providers) chanGP.push(await openChannel(gateway, p));
-    // the gateway's pool for this mint: routes credit agent money here, providers are paid from it
-    gatewayPool = routePoolPda(program.programId, gateway.participant, mint);
-    await program.methods.openRoutePool()
-      .accounts({ payer: relayer.publicKey, participant: gateway.participant, mint, tokenConfig, pool: gatewayPool, systemProgram: SystemProgram.programId })
-      .signers([relayer]).rpc();
+    agents = [
+      await makeParty(100 * ONE),
+      await makeParty(100 * ONE),
+      await makeParty(100 * ONE),
+    ];
+    gateway = await makeParty();
+    providers = [await makeParty(), await makeParty()];
+    for (const agent of agents) chanAG.push(await openChannel(agent, gateway));
     await lock(chanAG[0], 60 * ONE);
     await lock(chanAG[1], 30 * ONE);
     await lock(chanAG[2], 100 * ONE);
-    await assertSolvent();
     staging = await openStaging(program, relayer, KIND_UNILATERAL);
+    await assertSolvent();
   });
 
-  it("yields a false bit — not a failed batch — for an off-curve key and a garbage signature", async () => {
-    // A payer can register any 32 bytes as authorized_signer and a relayer can stage any 64 bytes
-    // as a signature. If either aborted the MPC instead of returning false, one bad record would
-    // poison the other 63 and burn the relayer's fee. Both must simply come back false.
-    const weird = await makeParty(10 * ONE);
-    const key = seeds.channel(program.programId, weird.participant, gateway.participant, mint);
-    await program.methods
-      .createChannel(new PublicKey(Buffer.alloc(32, 0xff))) // not a valid curve point
-      .accounts({
-        payerOwner: weird.owner.publicKey, config: configPda,
-        payerParticipant: weird.participant, payeeParticipant: gateway.participant,
-        mint, tokenConfig, payerBalance: weird.balance, payeeBalance: gateway.balance,
-        channel: key, systemProgram: SystemProgram.programId,
-      })
-      .signers([weird.owner]).rpc();
-    const c = await program.account.channel.fetch(key);
-    const weirdChan: Chan = { key, id: BigInt(c.channelId.toString()), payer: weird, payee: gateway };
-    await lock(weirdChan, 5 * ONE);
+  it("returns false for a malformed key or signature without failing the batch", async () => {
+    const weird = await makeParty(
+      10 * ONE,
+      new PublicKey(Buffer.alloc(32, 0xff))
+    );
+    const weirdChannel = await openChannel(weird, gateway);
+    await lock(weirdChannel, 5 * ONE);
     const records: UnilateralRecord[] = [
-      { commitment: uni(weirdChan, 1 * ONE), channel: key, signature: Buffer.alloc(64, 0xff) }, // garbage key + garbage sig
-      { ...uniRecord(chanAG[2], 1 * ONE), signature: Buffer.alloc(64, 0x01) },                  // real key, garbage sig
-      uniRecord(chanAG[2], 1 * ONE),                                                            // valid
+      {
+        commitment: uni(weirdChannel, ONE),
+        channel: weirdChannel.key,
+        signature: Buffer.alloc(64, 0xff),
+      },
+      { ...uniRecord(chanAG[2], ONE), signature: Buffer.alloc(64, 1) },
+      uniRecord(chanAG[2], ONE),
     ];
-    const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
-    expect(bits).to.deep.equal([false, false, true]);
-    await expectReject(settle(program, staging, [0], () => [key, gateway.balance]), /RecordNotVerified/);
-    // index 2 is left verified-but-unapplied on purpose: the next batch abandons it (allowed)
+    expect(
+      await clear(
+        KIND_UNILATERAL,
+        buildUnilateralBatch(records),
+        records.length
+      )
+    ).to.deep.equal([false, false, true]);
+    await expectReject(
+      settle(program, staging, [0], () => [weirdChannel.key, gateway.balance]),
+      /RecordNotVerified/
+    );
   });
 
-  it("clears a unilateral batch: valid, corrupt, partial and settles the valid ones", async () => {
+  it("settles valid unilateral commitments and clamps to locked funds", async () => {
     const records = [
-      uniRecord(chanAG[0], 40 * ONE), // moves 40 of 60
-      uniRecord(chanAG[1], 50 * ONE), // only 30 locked -> partial, stays live
-      uniRecord(chanAG[2], 10 * ONE, true), // corrupt signature -> bit 0
-      uniRecord(chanAG[2], 25 * ONE), // moves 25 of 100
+      uniRecord(chanAG[0], 40 * ONE),
+      uniRecord(chanAG[1], 50 * ONE),
+      uniRecord(chanAG[2], 10 * ONE, true),
+      uniRecord(chanAG[2], 25 * ONE),
     ];
-    const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
-    expect(bits).to.deep.equal([true, true, false, true]);
-
-    const chanOf = (i: number) =>
-      records[i].commitment.channelId === chanAG[0].id ? chanAG[0].key
-        : records[i].commitment.channelId === chanAG[1].id ? chanAG[1].key : chanAG[2].key;
-
-    // Wrong channel account for a record's id, and a balance that is not the payee's, are both
-    // refused before any state changes.
-    await expectReject(settle(program, staging, [3], () => [chanAG[0].key, gateway.balance]), /SettlementChannelMismatch/);
-    await expectReject(settle(program, staging, [3], () => [chanAG[2].key, agents[0].balance]), /SettlementBalanceMismatch/);
-
-    const gBefore = await avail(gateway);
-    await settle(program, staging, [0, 1, 3], (i) => [chanOf(i), gateway.balance]);
-
-    expect(await chan(chanAG[0])).to.deep.equal({ settled: 40 * ONE, locked: 20 * ONE });
-    expect(await chan(chanAG[1])).to.deep.equal({ settled: 30 * ONE, locked: 0 });
-    expect(await chan(chanAG[2])).to.deep.equal({ settled: 25 * ONE, locked: 75 * ONE });
-    expect(await avail(gateway)).to.equal(gBefore + 95 * ONE);
-    await assertSolvent();
-
-    // A record the circuit rejected cannot be settled; an applied one cannot be re-applied.
-    await expectReject(settle(program, staging, [2], () => [chanAG[2].key, gateway.balance]), /RecordNotVerified/);
-    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, gateway.balance]), /RecordAlreadyApplied/);
-  });
-
-  it("collects the remainder of a partially settled commitment in a later batch, and skips a satisfied one", async () => {
-    await lock(chanAG[1], 20 * ONE); // agent 2 tops up; the same 50 commitment is still live
-    // A commitment at or below the channel's watermark is refused at stage time — it could only
-    // ever move 0, so it is not worth an MPC slot (and cannot be used for write-lock griefing).
-    await expectReject((async () => {
-      const plan = await stageBatch(program, relayer, staging, buildUnilateralBatch([uniRecord(chanAG[0], 40 * ONE)]));
-      await sealAndQueue(program, relayer, staging, KIND_UNILATERAL, 1, plan.sealPre);
-    })(), /CommitmentAlreadySettled/);
-    const records = [
-      uniRecord(chanAG[1], 50 * ONE), // same commitment as before -> moves the remaining 20
-      uniRecord(chanAG[1], 50 * ONE), // the same commitment twice in one batch: second moves 0, still "applied"
-    ];
-    const { bits } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
-    expect(bits).to.deep.equal([true, true]);
-    // Abandoning is allowed: the relayer may reset while verified commitments are unapplied. The
-    // commitments are not lost — monotonicity lives on the channel — so re-staging them in the
-    // next batch settles exactly what the abandoned batch would have.
-    const { bits: again } = await clear(KIND_UNILATERAL, buildUnilateralBatch(records), records.length);
-    expect(again).to.deep.equal([true, true]);
-    const gBefore = await avail(gateway);
-    await settle(program, staging, [0, 1], () => [chanAG[1].key, gateway.balance]);
-    expect(await chan(chanAG[1])).to.deep.equal({ settled: 50 * ONE, locked: 0 });
-    expect(await chan(chanAG[0])).to.deep.equal({ settled: 40 * ONE, locked: 20 * ONE });
-    expect(await avail(gateway)).to.equal(gBefore + 20 * ONE);
-    // The duplicate moved nothing (monotonicity) and cannot be applied twice (per-batch `applied`).
-    await expectReject(settle(program, staging, [1], () => [chanAG[1].key, gateway.balance]), /RecordAlreadyApplied/);
-    await assertSolvent();
-  });
-
-  it("clears a route batch and settles agent -> gateway -> provider atomically, with no gateway prefunding", async () => {
-    // agent 1: 20 locked, settled 40. Route to provider 1: agent authorises up to 55 (delta 15),
-    // gateway forwards up to 12. Gateway keeps 3 as its implicit fee.
-    // agent 3: 75 locked, settled 25. Route to provider 2 with a corrupt gateway signature -> bit 0.
-    // agent 3 again, valid: up to 60 (delta 35), gateway forwards 35 -> provider 2 gets 35.
-    const records = [
-      routeRecord(chanAG[0], chanGP[0], 55 * ONE, 12 * ONE),
-      routeRecord(chanAG[2], chanGP[1], 30 * ONE, 5 * ONE, true),
-      routeRecord(chanAG[2], chanGP[1], 60 * ONE, 35 * ONE),
-    ];
-    expect(await chan(chanGP[0])).to.deep.equal({ settled: 0, locked: 0 });
-
-    // Race setup for the last test: while agent 1 still has 20 locked, it requests to unlock
-    // all 20. Settlement below will take 15 of it first — the payee wins the timelock race.
-    await program.methods.requestUnlockChannelFunds(new anchor.BN(20 * ONE))
-      .accounts({ payerOwner: agents[0].owner.publicKey, payerParticipant: agents[0].participant, config: configPda, channel: chanAG[0].key, payerBalance: agents[0].balance })
-      .signers([agents[0].owner]).rpc();
-
-    const { bits } = await clear(KIND_ROUTE, buildRouteBatch(records), records.length);
-    expect(bits).to.deep.equal([true, false, true]);
-
-    // A wrong provider balance for the gateway->provider channel is refused.
-    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanGP[0].key, gatewayPool, providers[1].balance]), /SettlementBalanceMismatch/);
-    // A gateway->provider channel that is not fed by this agent->gateway channel is refused.
-    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanAG[1].key, gatewayPool, providers[0].balance]), /SettlementChannelMismatch/);
-    // A pool that is not this gateway's is refused (here: another participant's balance-shaped account fails the type check).
-    await expectReject(settle(program, staging, [0], () => [chanAG[0].key, chanGP[0].key, gateway.balance, providers[0].balance]));
-
-    const p1Before = await avail(providers[0]);
-    const p2Before = await avail(providers[1]);
-    const gBefore = await avail(gateway);
-    const poolBefore = await poolBalance();
-    await settle(program, staging, [0, 2], (i) => i === 0
-      ? [chanAG[0].key, chanGP[0].key, gatewayPool, providers[0].balance]
-      : [chanAG[2].key, chanGP[1].key, gatewayPool, providers[1].balance]);
-
-    expect(await chan(chanAG[0])).to.deep.equal({ settled: 55 * ONE, locked: 5 * ONE });
-    expect(await chan(chanGP[0])).to.deep.equal({ settled: 12 * ONE, locked: 0 }); // the gateway's channel lock is untouched
-    expect(await avail(providers[0])).to.equal(p1Before + 12 * ONE);
-    expect(await chan(chanAG[2])).to.deep.equal({ settled: 60 * ONE, locked: 40 * ONE });
-    expect(await chan(chanGP[1])).to.deep.equal({ settled: 35 * ONE, locked: 0 });
-    expect(await avail(providers[1])).to.equal(p2Before + 35 * ONE);
-    // The gateway's margin (15 - 12 = 3, 35 - 35 = 0) sits in its pool, not in a provider channel.
-    expect(await poolBalance()).to.equal(poolBefore + 3 * ONE);
-    // The gateway's own free balance is untouched: routing never passes through it.
-    expect(await avail(gateway)).to.equal(gBefore);
-    await assertSolvent();
-
-    await expectReject(settle(program, staging, [1], () => [chanAG[2].key, chanGP[1].key, gatewayPool, providers[1].balance]), /RecordNotVerified/);
-  });
-
-  it("refuses at stage time anything that would verify but never settle, and an incomplete batch", async () => {
-    // (1) a channel that does not carry the record's channel id
-    const wrongId: UnilateralRecord = { ...uniRecord(chanAG[0], 1 * ONE), channel: chanAG[1].key };
-    const tryBatch = (b: Batch, count: number) => (async () => {
-      const plan = await stageBatch(program, relayer, staging, b);
-      await sealAndQueue(program, relayer, staging, b.kind, count, plan.sealPre);
-    })();
-    await expectReject(tryBatch(buildUnilateralBatch([wrongId]), 1), /StagedRecordMismatch/);
-    // (2) a co-signed route whose legs do not chain: agent 1 -> gateway paired with a channel
-    //     whose payer is NOT the gateway (agent 2 -> gateway). Both signatures are real, so the
-    //     circuit would say true and settle_route would refuse forever — the classic wedge.
-    const badRoute: RouteRecord = routeRecord(chanAG[0], chanAG[1], 1 * ONE, 1 * ONE);
-    await expectReject(tryBatch(buildRouteBatch([badRoute]), 1), /StagedRecordMismatch/);
-    // (3) sealing with count larger than what was staged this batch
-    await expectReject(tryBatch(buildUnilateralBatch([uniRecord(chanAG[2], 1000 * ONE)]), 2), /IncompleteBatch/);
-    // the buffer is left open (nothing sealed); the next test resets it normally
-  });
-
-  it("releases only what settlement left when the payer's unlock executes: the v1 clamp, end to end", async () => {
-    // Agent 1 requested 20 before settlement; settlement took 15. `execute` releases
-    // min(pending 20, locked 5) = 5 — the min(pending, locked) path that was unreachable in v1.
-    const ch = chanAG[0];
-    expect((await program.account.channel.fetch(ch.key)).pendingUnlockAmount.toNumber()).to.equal(20 * ONE);
-    await new Promise((r) => setTimeout(r, 3000));
-    const before = await avail(ch.payer);
-    await program.methods.executeUnlockChannelFunds()
-      .accounts({ payerOwner: ch.payer.owner.publicKey, payerParticipant: ch.payer.participant, config: configPda, channel: ch.key, payerBalance: ch.payer.balance })
-      .signers([ch.payer.owner]).rpc();
-    expect(await avail(ch.payer)).to.equal(before + 5 * ONE);
-    expect(await chan(ch)).to.deep.equal({ settled: 55 * ONE, locked: 0 });
-    await assertSolvent();
-  });
-
-  it("clears a full route batch of N_ROUTE distinct agents and settles all of them (many-channel case)", async () => {
-    // Every batch index names its own agent channel: N_ROUTE + 2 distinct channels. Keys are
-    // copied on-chain by stage_records, so the computation has a handful of account arguments —
-    // the Arcium program refuses a queue whose account arguments name more than ~14 distinct
-    // accounts, which is what per-channel arguments ran into on devnet.
-    const many: Chan[] = [];
-    for (let i = 0; i < N_ROUTE; i++) {
-      const a = await makeParty(10 * ONE);
-      const ch = await openChannel(a, gateway);
-      await lock(ch, 8 * ONE);
-      many.push(ch);
-    }
-    const gpBefore = [await chan(chanGP[0]), await chan(chanGP[1])];
-    // gateway targets are cumulative per gateway->provider channel: 1 unit fee per route
-    const cum = [gpBefore[0].settled, gpBefore[1].settled];
-    const records = many.map((ch, i) => {
-      const gp = i % 2;
-      cum[gp] += 2 * ONE;
-      return routeRecord(ch, chanGP[gp], 3 * ONE, cum[gp]);
+    expect(
+      await clear(
+        KIND_UNILATERAL,
+        buildUnilateralBatch(records),
+        records.length
+      )
+    ).to.deep.equal([true, true, false, true]);
+    const source = (i: number) =>
+      i === 0 ? chanAG[0].key : i === 1 ? chanAG[1].key : chanAG[2].key;
+    await settle(program, staging, [0, 1, 3], (i) => [
+      source(i),
+      gateway.balance,
+    ]);
+    expect(await channelState(chanAG[0])).to.deep.equal({
+      settled: 40 * ONE,
+      locked: 20 * ONE,
     });
-    const { bits } = await clear(KIND_ROUTE, buildRouteBatch(records), records.length);
-    expect(bits).to.deep.equal(new Array(N_ROUTE).fill(true));
-    for (let i = 0; i < N_ROUTE; i += 8) {
-      const idx = Array.from({ length: 8 }, (_, k) => i + k);
-      await settle(program, staging, idx, (j) => [many[j].key, chanGP[j % 2].key, gatewayPool, providers[j % 2].balance]);
-    }
-    for (const ch of many) expect(await chan(ch)).to.deep.equal({ settled: 3 * ONE, locked: 5 * ONE });
-    expect((await program.account.clearingResult.fetch(clearingPda(program.programId, staging))).applied.slice(0, 4)).to.deep.equal([255, 255, 255, 255]);
+    expect(await channelState(chanAG[1])).to.deep.equal({
+      settled: 30 * ONE,
+      locked: 0,
+    });
+    expect(await channelState(chanAG[2])).to.deep.equal({
+      settled: 25 * ONE,
+      locked: 75 * ONE,
+    });
     await assertSolvent();
   });
 
-  it("pays every provider the same whichever order a gateway's routes settle in (the pool)", async () => {
-    // Two routes for ONE agent to two providers, settled newest first. Without the pool the
-    // second route's settlement would have swept the whole agent increase into provider 2's
-    // channel and provider 1 would have got nothing.
+  it("resumes the same unilateral commitment after more funds are locked", async () => {
+    await lock(chanAG[1], 20 * ONE);
+    const records = [
+      uniRecord(chanAG[1], 50 * ONE),
+      uniRecord(chanAG[1], 50 * ONE),
+    ];
+    expect(
+      await clear(KIND_UNILATERAL, buildUnilateralBatch(records), 2)
+    ).to.deep.equal([true, true]);
+    await settle(program, staging, [0, 1], () => [
+      chanAG[1].key,
+      gateway.balance,
+    ]);
+    expect(await channelState(chanAG[1])).to.deep.equal({
+      settled: 50 * ONE,
+      locked: 0,
+    });
+    await assertSolvent();
+  });
+
+  it("pays multiple providers and the gateway fee from one signed commitment", async () => {
+    const record = routeRecord(chanAG[0], 40 * ONE, 55 * ONE, [
+      { provider: providers[0], amount: 12 * ONE },
+      { provider: providers[1], amount: 2 * ONE },
+    ]);
+    await program.methods
+      .requestUnlockChannelFunds(new anchor.BN(20 * ONE))
+      .accounts({
+        payerOwner: agents[0].owner.publicKey,
+        payerParticipant: agents[0].participant,
+        config: configPda,
+        channel: chanAG[0].key,
+        payerBalance: agents[0].balance,
+      })
+      .signers([agents[0].owner])
+      .rpc();
+
+    expect(
+      await clear(KIND_ROUTE, buildRouteBatch([record], gateway.participant), 1)
+    ).to.deep.equal([true]);
+    const p0 = await available(providers[0]);
+    const p1 = await available(providers[1]);
+    const g = await available(gateway);
+    await expectReject(
+      settle(program, staging, [0], () => [
+        chanAG[0].key,
+        gateway.balance,
+        providers[1].balance,
+        providers[0].balance,
+      ]),
+      /SettlementBalanceMismatch/
+    );
+    await settle(program, staging, [0], () => [
+      chanAG[0].key,
+      gateway.balance,
+      providers[0].balance,
+      providers[1].balance,
+    ]);
+    expect(await channelState(chanAG[0])).to.deep.equal({
+      settled: 55 * ONE,
+      locked: 5 * ONE,
+    });
+    expect(await available(providers[0])).to.equal(p0 + 12 * ONE);
+    expect(await available(providers[1])).to.equal(p1 + 2 * ONE);
+    expect(await available(gateway)).to.equal(g + ONE);
+    await assertSolvent();
+  });
+
+  it("pays whatever is locked now and resumes the same multi-provider commitment later", async () => {
     const agent = await makeParty(30 * ONE);
-    const ch = await openChannel(agent, gateway);
-    await lock(ch, 25 * ONE);
-    const gp0 = await chan(chanGP[0]);
-    const gp1 = await chan(chanGP[1]);
-    const r1 = routeRecord(ch, chanGP[0], 10 * ONE, gp0.settled + 9 * ONE);  // agent total 10, provider 1 +9
-    const r2 = routeRecord(ch, chanGP[1], 25 * ONE, gp1.settled + 14 * ONE); // agent total 25, provider 2 +14
-    const { bits } = await clear(KIND_ROUTE, buildRouteBatch([r1, r2]), 2);
-    expect(bits).to.deep.equal([true, true]);
-    const p1Before = await avail(providers[0]);
-    const p2Before = await avail(providers[1]);
-    const poolBefore = await poolBalance();
-    await settle(program, staging, [1], () => [ch.key, chanGP[1].key, gatewayPool, providers[1].balance]); // newest first
-    expect(await avail(providers[1])).to.equal(p2Before + 14 * ONE);
-    expect(await poolBalance()).to.equal(poolBefore + 11 * ONE); // 25 in, 14 out: provider 1's 9 + fee 2 waiting
-    await settle(program, staging, [0], () => [ch.key, chanGP[0].key, gatewayPool, providers[0].balance]);
-    expect(await avail(providers[0])).to.equal(p1Before + 9 * ONE); // paid from the pool, not from the agent
-    expect(await poolBalance()).to.equal(poolBefore + 2 * ONE);     // the gateway's margin
-    expect(await chan(ch)).to.deep.equal({ settled: 25 * ONE, locked: 0 });
-    // and the gateway can only take its margin out through the timelock
-    await program.methods.requestPoolUnlock(new anchor.BN(2 * ONE))
-      .accounts({ owner: gateway.owner.publicKey, participant: gateway.participant, config: configPda, pool: gatewayPool, balance: gateway.balance })
-      .signers([gateway.owner]).rpc();
-    await expectReject(program.methods.executePoolUnlock()
-      .accounts({ owner: gateway.owner.publicKey, participant: gateway.participant, config: configPda, pool: gatewayPool, balance: gateway.balance })
-      .signers([gateway.owner]).rpc(), /PoolUnlockLocked/);
-    await new Promise((r) => setTimeout(r, 3000));
-    const gBefore = await avail(gateway);
-    await program.methods.executePoolUnlock()
-      .accounts({ owner: gateway.owner.publicKey, participant: gateway.participant, config: configPda, pool: gatewayPool, balance: gateway.balance })
-      .signers([gateway.owner]).rpc();
-    expect(await avail(gateway)).to.equal(gBefore + 2 * ONE);
-    expect(await poolBalance()).to.equal(poolBefore);
+    const source = await openChannel(agent, gateway);
+    await lock(source, 20 * ONE);
+    const record = routeRecord(source, 0, 25 * ONE, [
+      { provider: providers[0], amount: 15 * ONE },
+      { provider: providers[1], amount: 8 * ONE },
+    ]);
+    const p0 = await available(providers[0]);
+    const p1 = await available(providers[1]);
+    const g = await available(gateway);
+
+    await clear(KIND_ROUTE, buildRouteBatch([record], gateway.participant), 1);
+    await settle(program, staging, [0], () => [
+      source.key,
+      gateway.balance,
+      providers[0].balance,
+      providers[1].balance,
+    ]);
+    expect(await channelState(source)).to.deep.equal({
+      settled: 20 * ONE,
+      locked: 0,
+    });
+    expect(await available(providers[0])).to.equal(p0 + 15 * ONE);
+    expect(await available(providers[1])).to.equal(p1 + 5 * ONE);
+    expect(await available(gateway)).to.equal(g);
+
+    await lock(source, 5 * ONE);
+    await clear(KIND_ROUTE, buildRouteBatch([record], gateway.participant), 1);
+    await settle(program, staging, [0], () => [
+      source.key,
+      gateway.balance,
+      providers[0].balance,
+      providers[1].balance,
+    ]);
+    expect(await channelState(source)).to.deep.equal({
+      settled: 25 * ONE,
+      locked: 0,
+    });
+    expect(await available(providers[1])).to.equal(p1 + 8 * ONE);
+    expect(await available(gateway)).to.equal(g + 2 * ONE);
     await assertSolvent();
   });
 
-  it("reclaims the buffer's rent once its last batch is fully applied", async () => {
-    // Every index of the last batch is applied.
+  it("makes the gateway accounting trust explicit: the first conflicting commitment wins", async () => {
+    const agent = await makeParty(25 * ONE);
+    const source = await openChannel(agent, gateway);
+    await lock(source, 25 * ONE);
+    const toProvider0 = routeRecord(source, 0, 25 * ONE, [
+      { provider: providers[0], amount: 25 * ONE },
+    ]);
+    const toProvider1 = routeRecord(source, 0, 25 * ONE, [
+      { provider: providers[1], amount: 25 * ONE },
+    ]);
+    expect(
+      await clear(
+        KIND_ROUTE,
+        buildRouteBatch([toProvider0, toProvider1], gateway.participant),
+        2
+      )
+    ).to.deep.equal([true, true]);
+    const p0 = await available(providers[0]);
+    const p1 = await available(providers[1]);
+    await settle(program, staging, [1], () => [
+      source.key,
+      gateway.balance,
+      providers[1].balance,
+    ]);
+    await settle(program, staging, [0], () => [
+      source.key,
+      gateway.balance,
+      providers[0].balance,
+    ]);
+    expect(await available(providers[1])).to.equal(p1 + 25 * ONE);
+    expect(await available(providers[0])).to.equal(p0);
+    expect(await channelState(source)).to.deep.equal({
+      settled: 25 * ONE,
+      locked: 0,
+    });
+  });
+
+  it("rejects invalid source, base, gateway allocation, mixed gateway, and incomplete staging", async () => {
+    const tryBatch = async (batch: Batch, count: number) => {
+      const plan = await stageBatch(program, relayer, staging, batch);
+      await sealAndQueue(
+        program,
+        relayer,
+        staging,
+        batch.kind,
+        count,
+        plan.sealPre
+      );
+    };
+    const wrongId: UnilateralRecord = {
+      ...uniRecord(chanAG[0], 56 * ONE),
+      channel: chanAG[1].key,
+    };
+    await expectReject(
+      tryBatch(buildUnilateralBatch([wrongId]), 1),
+      /StagedRecordMismatch/
+    );
+
+    const future = routeRecord(chanAG[2], 30 * ONE, 40 * ONE, [
+      { provider: providers[0], amount: 10 * ONE },
+    ]);
+    await expectReject(
+      tryBatch(buildRouteBatch([future], gateway.participant), 1),
+      /RouteBaseNotReached/
+    );
+
+    const gatewayAsProvider = routeRecord(chanAG[2], 25 * ONE, 30 * ONE, [
+      { provider: gateway, amount: 5 * ONE },
+    ]);
+    await expectReject(
+      tryBatch(buildRouteBatch([gatewayAsProvider], gateway.participant), 1),
+      /InvalidRouteAllocations/
+    );
+
+    const otherGateway = await makeParty();
+    const agent = await makeParty(10 * ONE);
+    const wrongGatewaySource = await openChannel(agent, otherGateway);
+    await lock(wrongGatewaySource, 5 * ONE);
+    const mixed = routeRecord(
+      wrongGatewaySource,
+      0,
+      5 * ONE,
+      [{ provider: providers[0], amount: 5 * ONE }],
+      false,
+      gateway
+    );
+    await expectReject(
+      tryBatch(buildRouteBatch([mixed], gateway.participant), 1),
+      /StagedRecordMismatch/
+    );
+
+    await expectReject(
+      tryBatch(buildUnilateralBatch([uniRecord(chanAG[2], 60 * ONE)]), 2),
+      /IncompleteBatch/
+    );
+  });
+
+  it("executes an unlock for only what settlement left", async () => {
+    expect(
+      (
+        await program.account.channel.fetch(chanAG[0].key)
+      ).pendingUnlockAmount.toNumber()
+    ).to.equal(20 * ONE);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const before = await available(agents[0]);
+    await program.methods
+      .executeUnlockChannelFunds()
+      .accounts({
+        payerOwner: agents[0].owner.publicKey,
+        payerParticipant: agents[0].participant,
+        config: configPda,
+        channel: chanAG[0].key,
+        payerBalance: agents[0].balance,
+      })
+      .signers([agents[0].owner])
+      .rpc();
+    expect(await available(agents[0])).to.equal(before + 5 * ONE);
+    expect(await channelState(chanAG[0])).to.deep.equal({
+      settled: 55 * ONE,
+      locked: 0,
+    });
+    await assertSolvent();
+  });
+
+  it("clears a full route batch of distinct agent channels", async () => {
+    const channels: Chan[] = [];
+    for (let i = 0; i < N_ROUTE; i++) {
+      const agent = await makeParty(10 * ONE);
+      const source = await openChannel(agent, gateway);
+      await lock(source, 8 * ONE);
+      channels.push(source);
+    }
+    const records = channels.map((source, i) =>
+      routeRecord(source, 0, 3 * ONE, [
+        { provider: providers[i % providers.length], amount: 2 * ONE },
+      ])
+    );
+    expect(
+      await clear(
+        KIND_ROUTE,
+        buildRouteBatch(records, gateway.participant),
+        N_ROUTE
+      )
+    ).to.deep.equal(new Array(N_ROUTE).fill(true));
+    for (let i = 0; i < N_ROUTE; i += 8) {
+      const indices = Array.from(
+        { length: Math.min(8, N_ROUTE - i) },
+        (_, k) => i + k
+      );
+      await settle(program, staging, indices, (index) => [
+        channels[index].key,
+        gateway.balance,
+        providers[index % providers.length].balance,
+      ]);
+    }
+    for (const channel of channels) {
+      expect(await channelState(channel)).to.deep.equal({
+        settled: 3 * ONE,
+        locked: 5 * ONE,
+      });
+    }
+    await assertSolvent();
+  });
+
+  it("reclaims staging rent", async () => {
     const before = await provider.connection.getBalance(relayer.publicKey);
     await closeStaging(program, relayer, staging);
-    expect(await provider.connection.getBalance(relayer.publicKey)).to.be.greaterThan(before);
+    expect(
+      await provider.connection.getBalance(relayer.publicKey)
+    ).to.be.greaterThan(before);
     expect(await provider.connection.getAccountInfo(staging)).to.be.null;
   });
 });

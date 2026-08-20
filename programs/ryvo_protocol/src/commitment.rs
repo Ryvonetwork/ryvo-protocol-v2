@@ -9,19 +9,14 @@
 //!
 //! * `kind = 0x01` **unilateral**: one signer, one channel. "I authorise this channel up to
 //!   `target_cumulative`."
-//! * `kind = 0x02` **route**: two signers, two channels. The agent and the gateway both sign the
-//!   same bytes; the agent authorises `channel_ag` up to `target_ag`, the gateway authorises
-//!   `channel_gp` up to `target_gp`, and settlement applies both in one instruction: the agent's
-//!   increase goes into the gateway's pool for that mint, and the provider is paid its increase
-//!   out of that pool and nothing else. The pool, not a specific
-//!   provider channel, is what receives agent money, so the order in which a gateway's routes
-//!   settle cannot move one provider's payment into another provider's channel; the gateway
-//!   cannot withhold a payout, because its consent is already inside the record the provider
-//!   holds and the pool can only be withdrawn after the timelock.
+//! * `kind = 0x02` **route**: the agent and gateway sign one cumulative source-channel target
+//!   plus the complete provider allocation for that increase. Settlement debits the agent's
+//!   locked channel and credits every provider and the gateway fee directly in one instruction.
+//!   There is no gateway pool and no gateway-to-provider channel.
 //!
-//! Channels are named by `channel_id: u64` (a global counter assigned at `create_channel`), not
-//! by their 32-byte address. That is what keeps a route message at 50 bytes and lets a staged
-//! record fit in a handful of 32-byte field-element slots.
+//! Channels and providers are named by permanent u64 ids, not 32-byte addresses. A route carries
+//! at most `MAX_ROUTE_ALLOCATIONS` providers; unused entries are zero. The fixed canonical width
+//! keeps the circuit shape deterministic, while staging transmits only active allocations.
 //!
 //! # Why SHA3-256, not SHA-256
 //!
@@ -49,14 +44,15 @@ use anchor_lang::prelude::*;
 
 pub const KIND_UNILATERAL: u8 = 0x01;
 pub const KIND_ROUTE: u8 = 0x02;
+pub const MAX_ROUTE_ALLOCATIONS: usize = 16;
 
 /// Identifies both the wire format *and* the signature scheme (ArcisEd25519 / SHA3-512).
 pub const VERSION: u8 = 0x01;
 
 /// `domain(16) | kind(1) | version(1) | channel_id(8) | target(8)`
 pub const UNILATERAL_LEN: usize = 34;
-/// `domain(16) | kind(1) | version(1) | channel_ag_id(8) | channel_gp_id(8) | target_ag(8) | target_gp(8)`
-pub const ROUTE_LEN: usize = 50;
+/// `domain | kind | version | source_id | base | target | count | (provider_id, amount)[16]`.
+pub const ROUTE_LEN: usize = 18 + 4 * 8 + MAX_ROUTE_ALLOCATIONS * 16;
 
 const OFF_DOMAIN: usize = 0;
 const OFF_KIND: usize = 16;
@@ -73,16 +69,26 @@ pub struct UnilateralCommitment {
     pub target_cumulative: u64,
 }
 
-/// A two-signer route through a gateway: `agent -> gateway -> provider`.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct RouteAllocation {
+    pub participant_id: u64,
+    pub amount: u64,
+}
+
+/// One two-signer cumulative route bundle for an agent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RouteCommitment {
     pub message_domain: [u8; 16],
-    /// agent -> gateway channel, signed by the agent's key.
-    pub channel_ag_id: u64,
-    /// gateway -> provider channel, signed by the gateway's key.
-    pub channel_gp_id: u64,
-    pub target_ag: u64,
-    pub target_gp: u64,
+    /// Agent -> gateway source channel, signed by the agent and the gateway.
+    pub source_channel_id: u64,
+    /// First cumulative unit described by this bundle. A newer bundle keeps the same base until
+    /// the previous allocations have settled, so it can replace every older off-chain message.
+    pub base_cumulative: u64,
+    pub target_cumulative: u64,
+    pub allocation_count: u8,
+    /// Ordered provider ranges. Partial settlement pays them in this signed order; any remainder
+    /// between the last provider range and `target_cumulative` is the gateway fee.
+    pub allocations: [RouteAllocation; MAX_ROUTE_ALLOCATIONS],
 }
 
 impl UnilateralCommitment {
@@ -101,9 +107,18 @@ impl UnilateralCommitment {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        require!(bytes.len() == UNILATERAL_LEN, RyvoError::InvalidCommitmentMessage);
-        require!(bytes[OFF_KIND] == KIND_UNILATERAL, RyvoError::InvalidCommitmentMessage);
-        require!(bytes[OFF_VERSION] == VERSION, RyvoError::InvalidCommitmentMessage);
+        require!(
+            bytes.len() == UNILATERAL_LEN,
+            RyvoError::InvalidCommitmentMessage
+        );
+        require!(
+            bytes[OFF_KIND] == KIND_UNILATERAL,
+            RyvoError::InvalidCommitmentMessage
+        );
+        require!(
+            bytes[OFF_VERSION] == VERSION,
+            RyvoError::InvalidCommitmentMessage
+        );
         let mut message_domain = [0u8; 16];
         message_domain.copy_from_slice(&bytes[OFF_DOMAIN..OFF_KIND]);
         Ok(Self {
@@ -128,10 +143,16 @@ impl RouteCommitment {
         out[OFF_DOMAIN..OFF_KIND].copy_from_slice(&self.message_domain);
         out[OFF_KIND] = KIND_ROUTE;
         out[OFF_VERSION] = VERSION;
-        out[OFF_BODY..OFF_BODY + 8].copy_from_slice(&self.channel_ag_id.to_le_bytes());
-        out[OFF_BODY + 8..OFF_BODY + 16].copy_from_slice(&self.channel_gp_id.to_le_bytes());
-        out[OFF_BODY + 16..OFF_BODY + 24].copy_from_slice(&self.target_ag.to_le_bytes());
-        out[OFF_BODY + 24..OFF_BODY + 32].copy_from_slice(&self.target_gp.to_le_bytes());
+        out[OFF_BODY..OFF_BODY + 8].copy_from_slice(&self.source_channel_id.to_le_bytes());
+        out[OFF_BODY + 8..OFF_BODY + 16].copy_from_slice(&self.base_cumulative.to_le_bytes());
+        out[OFF_BODY + 16..OFF_BODY + 24].copy_from_slice(&self.target_cumulative.to_le_bytes());
+        out[OFF_BODY + 24..OFF_BODY + 32]
+            .copy_from_slice(&(self.allocation_count as u64).to_le_bytes());
+        for (i, allocation) in self.allocations.iter().enumerate() {
+            let at = OFF_BODY + 32 + i * 16;
+            out[at..at + 8].copy_from_slice(&allocation.participant_id.to_le_bytes());
+            out[at + 8..at + 16].copy_from_slice(&allocation.amount.to_le_bytes());
+        }
         out
     }
 
@@ -140,28 +161,99 @@ impl RouteCommitment {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        require!(bytes.len() == ROUTE_LEN, RyvoError::InvalidCommitmentMessage);
-        require!(bytes[OFF_KIND] == KIND_ROUTE, RyvoError::InvalidCommitmentMessage);
-        require!(bytes[OFF_VERSION] == VERSION, RyvoError::InvalidCommitmentMessage);
+        require!(
+            bytes.len() == ROUTE_LEN,
+            RyvoError::InvalidCommitmentMessage
+        );
+        require!(
+            bytes[OFF_KIND] == KIND_ROUTE,
+            RyvoError::InvalidCommitmentMessage
+        );
+        require!(
+            bytes[OFF_VERSION] == VERSION,
+            RyvoError::InvalidCommitmentMessage
+        );
         let mut message_domain = [0u8; 16];
         message_domain.copy_from_slice(&bytes[OFF_DOMAIN..OFF_KIND]);
-        let u = |o: usize| u64::from_le_bytes(bytes[OFF_BODY + o..OFF_BODY + o + 8].try_into().unwrap());
-        Ok(Self {
+        let u = |o: usize| {
+            u64::from_le_bytes(bytes[OFF_BODY + o..OFF_BODY + o + 8].try_into().unwrap())
+        };
+        let count = u(24);
+        require!(
+            count <= MAX_ROUTE_ALLOCATIONS as u64,
+            RyvoError::InvalidRouteAllocations
+        );
+        let mut allocations = [RouteAllocation::default(); MAX_ROUTE_ALLOCATIONS];
+        for (i, allocation) in allocations.iter_mut().enumerate() {
+            let at = 32 + i * 16;
+            allocation.participant_id = u(at);
+            allocation.amount = u(at + 8);
+        }
+        let commitment = Self {
             message_domain,
-            channel_ag_id: u(0),
-            channel_gp_id: u(8),
-            target_ag: u(16),
-            target_gp: u(24),
-        })
+            source_channel_id: u(0),
+            base_cumulative: u(8),
+            target_cumulative: u(16),
+            allocation_count: count as u8,
+            allocations,
+        };
+        commitment.validate()?;
+        Ok(commitment)
     }
 
-    /// The two u128 slots for this record's body: `(ids, targets)`. Their little-endian bytes
-    /// are canonical bytes `[18..34]` and `[34..50]` respectively.
-    pub fn body_slots(&self) -> (u128, u128) {
-        (
-            pack_pair(self.channel_ag_id, self.channel_gp_id),
-            pack_pair(self.target_ag, self.target_gp),
-        )
+    pub fn validate(&self) -> Result<(u64, u64)> {
+        let count = self.allocation_count as usize;
+        require!(
+            count > 0 && count <= MAX_ROUTE_ALLOCATIONS,
+            RyvoError::InvalidRouteAllocations
+        );
+        require!(
+            self.base_cumulative < self.target_cumulative,
+            RyvoError::InvalidRouteAllocations
+        );
+        let mut provider_total = 0u64;
+        for (i, allocation) in self.allocations.iter().enumerate() {
+            if i < count {
+                require!(
+                    allocation.participant_id != 0 && allocation.amount > 0,
+                    RyvoError::InvalidRouteAllocations
+                );
+                require!(
+                    !self.allocations[..i]
+                        .iter()
+                        .any(|prior| prior.participant_id == allocation.participant_id),
+                    RyvoError::InvalidRouteAllocations
+                );
+                provider_total = provider_total
+                    .checked_add(allocation.amount)
+                    .ok_or(RyvoError::MathOverflow)?;
+            } else {
+                require!(
+                    allocation.participant_id == 0 && allocation.amount == 0,
+                    RyvoError::InvalidRouteAllocations
+                );
+            }
+        }
+        let increase = self
+            .target_cumulative
+            .checked_sub(self.base_cumulative)
+            .ok_or(RyvoError::MathOverflow)?;
+        require!(
+            provider_total <= increase,
+            RyvoError::InvalidRouteAllocations
+        );
+        Ok((provider_total, increase - provider_total))
+    }
+
+    /// Fixed body slots read by the route circuit. Little-endian bytes are the canonical body.
+    pub fn body_slots(&self) -> [u128; 2 + MAX_ROUTE_ALLOCATIONS] {
+        let mut out = [0u128; 2 + MAX_ROUTE_ALLOCATIONS];
+        out[0] = pack_pair(self.source_channel_id, self.base_cumulative);
+        out[1] = pack_pair(self.target_cumulative, self.allocation_count as u64);
+        for (i, allocation) in self.allocations.iter().enumerate() {
+            out[2 + i] = pack_pair(allocation.participant_id, allocation.amount);
+        }
+        out
     }
 }
 
@@ -259,29 +351,46 @@ mod tests {
     }
 
     fn uni() -> UnilateralCommitment {
-        UnilateralCommitment { message_domain: DOMAIN, channel_id: 7, target_cumulative: 1_000_000 }
+        UnilateralCommitment {
+            message_domain: DOMAIN,
+            channel_id: 7,
+            target_cumulative: 1_000_000,
+        }
     }
     fn route() -> RouteCommitment {
+        let mut allocations = [RouteAllocation::default(); MAX_ROUTE_ALLOCATIONS];
+        allocations[0] = RouteAllocation {
+            participant_id: 41,
+            amount: 600_000,
+        };
+        allocations[1] = RouteAllocation {
+            participant_id: 42,
+            amount: 390_000,
+        };
         RouteCommitment {
             message_domain: DOMAIN,
-            channel_ag_id: 7,
-            channel_gp_id: 9,
-            target_ag: 1_000_000,
-            target_gp: 990_000,
+            source_channel_id: 7,
+            base_cumulative: 0,
+            target_cumulative: 1_000_000,
+            allocation_count: 2,
+            allocations,
         }
     }
 
     #[test]
     fn lengths() {
         assert_eq!(UNILATERAL_LEN, 34);
-        assert_eq!(ROUTE_LEN, 50);
+        assert_eq!(ROUTE_LEN, 306);
         assert_eq!(uni().encode().len(), UNILATERAL_LEN);
         assert_eq!(route().encode().len(), ROUTE_LEN);
     }
 
     #[test]
     fn round_trips() {
-        assert_eq!(UnilateralCommitment::decode(&uni().encode()).unwrap(), uni());
+        assert_eq!(
+            UnilateralCommitment::decode(&uni().encode()).unwrap(),
+            uni()
+        );
         assert_eq!(RouteCommitment::decode(&route().encode()).unwrap(), route());
     }
 
@@ -302,9 +411,10 @@ mod tests {
         let c = uni();
         assert_eq!(&c.encode()[18..34], &c.body_slot().to_le_bytes());
         let r = route();
-        let (ids, targets) = r.body_slots();
-        assert_eq!(&r.encode()[18..34], &ids.to_le_bytes());
-        assert_eq!(&r.encode()[34..50], &targets.to_le_bytes());
+        let slots = r.body_slots();
+        for (i, slot) in slots.iter().enumerate() {
+            assert_eq!(&r.encode()[18 + i * 16..34 + i * 16], &slot.to_le_bytes());
+        }
         assert_eq!(&DOMAIN, &domain_slot(&DOMAIN).to_le_bytes());
         assert_eq!(unpack_pair(pack_pair(7, 9)), (7, 9));
     }
@@ -313,19 +423,51 @@ mod tests {
     fn every_field_is_covered_by_the_digest() {
         let d = uni().digest();
         for v in [
-            UnilateralCommitment { message_domain: [0xff; 16], ..uni() },
-            UnilateralCommitment { channel_id: 8, ..uni() },
-            UnilateralCommitment { target_cumulative: 1_000_001, ..uni() },
+            UnilateralCommitment {
+                message_domain: [0xff; 16],
+                ..uni()
+            },
+            UnilateralCommitment {
+                channel_id: 8,
+                ..uni()
+            },
+            UnilateralCommitment {
+                target_cumulative: 1_000_001,
+                ..uni()
+            },
         ] {
             assert_ne!(v.digest(), d, "{v:?}");
         }
         let d = route().digest();
         for v in [
-            RouteCommitment { message_domain: [0xff; 16], ..route() },
-            RouteCommitment { channel_ag_id: 8, ..route() },
-            RouteCommitment { channel_gp_id: 8, ..route() },
-            RouteCommitment { target_ag: 1, ..route() },
-            RouteCommitment { target_gp: 1, ..route() },
+            RouteCommitment {
+                message_domain: [0xff; 16],
+                ..route()
+            },
+            RouteCommitment {
+                source_channel_id: 8,
+                ..route()
+            },
+            RouteCommitment {
+                base_cumulative: 1,
+                ..route()
+            },
+            RouteCommitment {
+                target_cumulative: 1_000_001,
+                ..route()
+            },
+            RouteCommitment {
+                allocation_count: 1,
+                ..route()
+            },
+            RouteCommitment {
+                allocations: {
+                    let mut a = route().allocations;
+                    a[0].amount += 1;
+                    a
+                },
+                ..route()
+            },
         ] {
             assert_ne!(v.digest(), d, "{v:?}");
         }
@@ -357,6 +499,20 @@ mod tests {
         assert_eq!(check_monotonic(u64::MAX, u64::MAX - 1).unwrap(), 1);
     }
 
+    #[test]
+    fn route_allocation_validation() {
+        assert_eq!(route().validate().unwrap(), (990_000, 10_000));
+        let mut duplicate = route();
+        duplicate.allocations[1].participant_id = duplicate.allocations[0].participant_id;
+        assert!(duplicate.validate().is_err());
+        let mut too_much = route();
+        too_much.allocations[1].amount = 500_000;
+        assert!(too_much.validate().is_err());
+        let mut dirty_padding = route();
+        dirty_padding.allocations[3].amount = 1;
+        assert!(dirty_padding.validate().is_err());
+    }
+
     /// Golden vectors, mirrored in `tests/vectors/commitment.json` for the TypeScript client.
     #[test]
     fn golden_vectors() {
@@ -368,13 +524,10 @@ mod tests {
             hex(&uni().digest()),
             "52686ad6b6051d37c5591e62815dc581451ff568976769e1018eb0d72d7ce7eb",
         );
-        assert_eq!(
-            hex(&route().encode()),
-            "99c670af9da768bc427a4b1b1b0f126702010700000000000000090000000000000040420f0000000000301b0f0000000000",
-        );
+        assert_eq!(route().encode().len(), ROUTE_LEN);
         assert_eq!(
             hex(&route().digest()),
-            "e542843e915ee03bf3b12cb56881cc7832a28a99ea5d47f2585c4783ead0d3ce",
+            "2de675518f0de35de938add2a086b565fd906b260b992a005332c97d26674be1",
         );
     }
 }

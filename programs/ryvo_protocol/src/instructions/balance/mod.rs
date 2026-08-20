@@ -47,9 +47,10 @@ pub fn open_balance_handler(ctx: Context<OpenBalance>) -> Result<()> {
     let balance = &mut ctx.accounts.balance;
     balance.participant = ctx.accounts.participant.key();
     balance.mint = ctx.accounts.mint.key();
+    balance.participant_id = ctx.accounts.participant.participant_id;
     balance.available = 0;
     balance.bump = ctx.bumps.balance;
-    balance._reserved = [0u8; 96];
+    balance._reserved = [0u8; 88];
 
     emit!(BalanceOpened {
         balance: balance.key(),

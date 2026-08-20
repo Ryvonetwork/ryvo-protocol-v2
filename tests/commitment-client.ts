@@ -16,8 +16,9 @@ export const KIND_ROUTE = 0x02;
 export const VERSION = 0x01;
 /** domain(16) | kind | version | channel_id(8) | target(8) */
 export const UNILATERAL_LEN = 34;
-/** domain(16) | kind | version | ag_id(8) | gp_id(8) | target_ag(8) | target_gp(8) */
-export const ROUTE_LEN = 50;
+export const MAX_ROUTE_ALLOCATIONS = 16;
+/** domain | kind | version | source_id | base | target | count(u64) | allocations[16] */
+export const ROUTE_LEN = 18 + 4 * 8 + MAX_ROUTE_ALLOCATIONS * 16;
 
 export const MESSAGE_DOMAIN_TAG = "ryvo-message-domain-v1";
 export const COMMITMENT_DIGEST_TAG = "ryvo-commitment-v1";
@@ -31,32 +32,51 @@ export interface UnilateralCommitment {
 }
 
 /**
- * Two signers, two channels: the agent authorises `channelAgId` up to `targetAg` and the gateway
- * authorises `channelGpId` up to `targetGp`, over the same bytes. Settlement moves both legs in
- * one instruction, so the gateway never holds the money and cannot withhold the payout.
+ * One provider allocation inside a route commitment. `amount` is a range length inside
+ * `baseCumulative..targetCumulative`, not a separate provider-channel counter.
+ */
+export interface RouteAllocation {
+  participantId: bigint;
+  amount: bigint;
+}
+
+/**
+ * The agent and gateway sign the same cumulative commitment. Settlement debits the agent's
+ * locked source channel and directly credits the listed providers in order. Any signed
+ * remainder after the allocations is the gateway fee.
  */
 export interface RouteCommitment {
   kind: typeof KIND_ROUTE;
   messageDomain: Buffer;
-  channelAgId: bigint;
-  channelGpId: bigint;
-  targetAg: bigint;
-  targetGp: bigint;
+  sourceChannelId: bigint;
+  baseCumulative: bigint;
+  targetCumulative: bigint;
+  allocations: RouteAllocation[];
 }
 
 export type Commitment = UnilateralCommitment | RouteCommitment;
 
-export function deriveMessageDomain(programId: PublicKey, chainId: number): Buffer {
+export function deriveMessageDomain(
+  programId: PublicKey,
+  chainId: number
+): Buffer {
   const chainLe = Buffer.alloc(2);
   chainLe.writeUInt16LE(chainId);
   return createHash("sha256")
-    .update(Buffer.concat([Buffer.from(MESSAGE_DOMAIN_TAG), programId.toBuffer(), chainLe]))
+    .update(
+      Buffer.concat([
+        Buffer.from(MESSAGE_DOMAIN_TAG),
+        programId.toBuffer(),
+        chainLe,
+      ])
+    )
     .digest()
     .subarray(0, 16);
 }
 
 function header(out: Buffer, domain: Buffer, kind: number) {
-  if (domain.length !== 16) throw new Error(`messageDomain must be 16 bytes, got ${domain.length}`);
+  if (domain.length !== 16)
+    throw new Error(`messageDomain must be 16 bytes, got ${domain.length}`);
   domain.copy(out, 0);
   out[16] = kind;
   out[17] = VERSION;
@@ -72,11 +92,46 @@ export function encodeCommitment(c: Commitment): Buffer {
   }
   const out = Buffer.alloc(ROUTE_LEN);
   header(out, c.messageDomain, KIND_ROUTE);
-  out.writeBigUInt64LE(c.channelAgId, 18);
-  out.writeBigUInt64LE(c.channelGpId, 26);
-  out.writeBigUInt64LE(c.targetAg, 34);
-  out.writeBigUInt64LE(c.targetGp, 42);
+  validateRoute(c);
+  out.writeBigUInt64LE(c.sourceChannelId, 18);
+  out.writeBigUInt64LE(c.baseCumulative, 26);
+  out.writeBigUInt64LE(c.targetCumulative, 34);
+  out.writeBigUInt64LE(BigInt(c.allocations.length), 42);
+  c.allocations.forEach((allocation, i) => {
+    const at = 50 + i * 16;
+    out.writeBigUInt64LE(allocation.participantId, at);
+    out.writeBigUInt64LE(allocation.amount, at + 8);
+  });
   return out;
+}
+
+export function validateRoute(c: RouteCommitment): {
+  providerTotal: bigint;
+  gatewayFee: bigint;
+} {
+  if (
+    c.allocations.length < 1 ||
+    c.allocations.length > MAX_ROUTE_ALLOCATIONS
+  ) {
+    throw new Error("bad allocation count");
+  }
+  if (c.baseCumulative >= c.targetCumulative)
+    throw new Error("bad cumulative range");
+  const ids = new Set<string>();
+  let providerTotal = 0n;
+  for (const allocation of c.allocations) {
+    if (allocation.participantId === 0n || allocation.amount === 0n) {
+      throw new Error("bad allocation");
+    }
+    const id = allocation.participantId.toString();
+    if (ids.has(id)) throw new Error("duplicate provider");
+    ids.add(id);
+    providerTotal += allocation.amount;
+  }
+  const total = c.targetCumulative - c.baseCumulative;
+  if (providerTotal > total)
+    throw new Error("allocations exceed cumulative increase");
+  return { providerTotal, gatewayFee: total - providerTotal };
 }
 
 /** The 32 bytes an agent actually signs: `SHA3-256(tag || canonical)`. */
@@ -85,11 +140,14 @@ export function commitmentDigest(c: Commitment): Buffer {
 }
 
 export function digestOf(canonical: Buffer): Buffer {
-  return Buffer.from(sha3_256(Buffer.concat([Buffer.from(COMMITMENT_DIGEST_TAG), canonical])));
+  return Buffer.from(
+    sha3_256(Buffer.concat([Buffer.from(COMMITMENT_DIGEST_TAG), canonical]))
+  );
 }
 
 export function decodeCommitment(bytes: Buffer): Commitment {
-  if (bytes.length !== UNILATERAL_LEN && bytes.length !== ROUTE_LEN) throw new Error("bad length");
+  if (bytes.length !== UNILATERAL_LEN && bytes.length !== ROUTE_LEN)
+    throw new Error("bad length");
   if (bytes[17] !== VERSION) throw new Error("bad version");
   const messageDomain = Buffer.from(bytes.subarray(0, 16));
   if (bytes[16] === KIND_UNILATERAL) {
@@ -103,14 +161,28 @@ export function decodeCommitment(bytes: Buffer): Commitment {
   }
   if (bytes[16] === KIND_ROUTE) {
     if (bytes.length !== ROUTE_LEN) throw new Error("bad length");
-    return {
+    const count = Number(bytes.readBigUInt64LE(42));
+    if (count < 1 || count > MAX_ROUTE_ALLOCATIONS)
+      throw new Error("bad allocation count");
+    const allocations: RouteAllocation[] = [];
+    for (let i = 0; i < MAX_ROUTE_ALLOCATIONS; i++) {
+      const at = 50 + i * 16;
+      const participantId = bytes.readBigUInt64LE(at);
+      const amount = bytes.readBigUInt64LE(at + 8);
+      if (i < count) allocations.push({ participantId, amount });
+      else if (participantId !== 0n || amount !== 0n)
+        throw new Error("nonzero allocation padding");
+    }
+    const route: RouteCommitment = {
       kind: KIND_ROUTE,
       messageDomain,
-      channelAgId: bytes.readBigUInt64LE(18),
-      channelGpId: bytes.readBigUInt64LE(26),
-      targetAg: bytes.readBigUInt64LE(34),
-      targetGp: bytes.readBigUInt64LE(42),
+      sourceChannelId: bytes.readBigUInt64LE(18),
+      baseCumulative: bytes.readBigUInt64LE(26),
+      targetCumulative: bytes.readBigUInt64LE(34),
+      allocations,
     };
+    validateRoute(route);
+    return route;
   }
   throw new Error("bad kind");
 }
@@ -142,7 +214,9 @@ export function packBytesToSlots(bytes: Uint8Array): Buffer[] {
   const out: Buffer[] = [];
   for (let i = 0; i < bytes.length; i += BYTES_PER_SLOT) {
     const s = Buffer.alloc(SLOT);
-    Buffer.from(bytes.subarray(i, Math.min(i + BYTES_PER_SLOT, bytes.length))).copy(s, 0);
+    Buffer.from(
+      bytes.subarray(i, Math.min(i + BYTES_PER_SLOT, bytes.length))
+    ).copy(s, 0);
     out.push(s);
   }
   return out;
@@ -154,9 +228,19 @@ export function unpackPubkeySlots(slots: Buffer[]): Buffer {
 
 /** The u128 slot(s) holding a commitment's body; their LE bytes are canonical bytes [18..]. */
 export function bodySlots(c: Commitment): bigint[] {
-  return c.kind === KIND_UNILATERAL
-    ? [packPair(c.channelId, c.targetCumulative)]
-    : [packPair(c.channelAgId, c.channelGpId), packPair(c.targetAg, c.targetGp)];
+  if (c.kind === KIND_UNILATERAL)
+    return [packPair(c.channelId, c.targetCumulative)];
+  const slots = [
+    packPair(c.sourceChannelId, c.baseCumulative),
+    packPair(c.targetCumulative, BigInt(c.allocations.length)),
+  ];
+  for (let i = 0; i < MAX_ROUTE_ALLOCATIONS; i++) {
+    const allocation = c.allocations[i];
+    slots.push(
+      allocation ? packPair(allocation.participantId, allocation.amount) : 0n
+    );
+  }
+  return slots;
 }
 
 export const domainSlot = (messageDomain: Buffer): bigint =>
@@ -214,7 +298,9 @@ export function deriveArcisSignerSeed(walletSeed: Uint8Array): Buffer {
     throw new Error(`wallet seed must be 32 bytes, got ${walletSeed.length}`);
   }
   return createHash("sha256")
-    .update(Buffer.concat([Buffer.from(ARCIS_SIGNER_TAG), Buffer.from(walletSeed)]))
+    .update(
+      Buffer.concat([Buffer.from(ARCIS_SIGNER_TAG), Buffer.from(walletSeed)])
+    )
     .digest();
 }
 
@@ -234,7 +320,7 @@ export function deriveArcisSigner(walletSeed: Uint8Array): ArcisSigner {
 /** Sign a commitment with the agent's signing key. */
 export function signCommitment(
   walletSeed: Uint8Array,
-  commitment: Commitment,
+  commitment: Commitment
 ): { signature: Buffer; publicKey: Buffer; digest: Buffer } {
   const signer = deriveArcisSigner(walletSeed);
   const digest = commitmentDigest(commitment);
@@ -252,7 +338,7 @@ export function arcisSign(digest: Uint8Array, seed: Uint8Array): Uint8Array {
 export function arcisVerify(
   signature: Uint8Array,
   digest: Uint8Array,
-  publicKey: Uint8Array,
+  publicKey: Uint8Array
 ): boolean {
   return arcisEd25519.verify(signature, digest, publicKey);
 }

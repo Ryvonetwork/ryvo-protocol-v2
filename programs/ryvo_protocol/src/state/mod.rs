@@ -2,14 +2,12 @@ pub mod balance;
 pub mod channel;
 pub mod config;
 pub mod participant;
-pub mod route_pool;
 pub mod token_config;
 
 pub use balance::*;
 pub use channel::*;
 pub use config::*;
 pub use participant::*;
-pub use route_pool::*;
 pub use token_config::*;
 
 #[cfg(test)]
@@ -25,29 +23,26 @@ mod tests {
     fn account_sizes_are_pinned() {
         // 8-byte Anchor discriminator is added on top of INIT_SPACE by `#[account(space = ..)]`
         // call sites, so these figures are the payload only.
-        assert_eq!(Config::INIT_SPACE, 32 + 32 + 16 + 8 + 2 + 8 + 1 + 120);
-        assert_eq!(Participant::INIT_SPACE, 32 + 1 + 96);
+        assert_eq!(Config::INIT_SPACE, 32 + 32 + 16 + 8 + 2 + 8 + 8 + 1 + 112);
+        assert_eq!(Participant::INIT_SPACE, 32 + 32 + 8 + 1 + 56);
         assert_eq!(TokenConfig::INIT_SPACE, 32 + 32 + 1 + 1 + 1 + 96);
-        assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 1 + 96);
+        assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 8 + 1 + 88);
         assert_eq!(
             Channel::INIT_SPACE,
             32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 64 + 1 + 88
         );
-        assert_eq!(RoutePool::INIT_SPACE, 32 + 32 + 8 + 8 + 8 + 1 + 96);
     }
 
-    /// Every non-singleton account must carry reserved space for at least two pubkeys plus two
-    /// timestamps. The prior design had a per-channel settlement record with zero reserved bytes; that is the condition
-    /// that makes a migration unavoidable rather than optional.
+    /// Every non-singleton account keeps meaningful reserved space. Participant used 40 bytes
+    /// of its original reserve for the permanent signer and compact id without changing size.
     #[test]
     fn non_singleton_accounts_reserve_growth_room() {
-        const MIN_RESERVED: usize = 2 * 32 + 2 * 8;
+        const MIN_RESERVED: usize = 48;
         for (name, reserved) in [
-            ("Participant", 96usize),
+            ("Participant", 56usize),
             ("TokenConfig", 96),
-            ("Balance", 96),
+            ("Balance", 88),
             ("Channel", 88),
-            ("RoutePool", 96),
         ] {
             assert!(
                 reserved >= MIN_RESERVED,

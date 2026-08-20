@@ -2,12 +2,6 @@ use anchor_lang::prelude::*;
 
 /// Permanent protocol identity for one wallet. PDA seeds: `["participant", owner]`.
 ///
-/// There is deliberately no numeric participant id and no global counter. The PDA *is* the
-/// identity: it is derived from the owner, there is no close instruction, so it can never be
-/// recycled — which is the property that matters for replay safety. A counter would also have
-/// forced every registration to write-lock the singleton `Config`, serialising all sign-ups and
-/// letting a user-facing instruction mutate the singleton config account.
-///
 /// There is also no inbound-channel policy. Opening a channel *to* someone costs them nothing —
 /// the payer pays the rent and the only thing it enables is sending them money — so requiring
 /// their consent was friction without a matching protection. A payee's real control is whether
@@ -19,9 +13,13 @@ use anchor_lang::prelude::*;
 #[derive(InitSpace)]
 pub struct Participant {
     pub owner: Pubkey,
+    /// Immutable ArcisEd25519 key used for every channel this participant pays from.
+    pub authorized_signer: Pubkey,
+    /// Compact, permanent identifier used inside routed commitments.
+    pub participant_id: u64,
     pub bump: u8,
     /// Sized for at least two pubkeys plus two timestamps, per the reserved-space rule. The
     /// prior design's participant record had zero reserved bytes, which is precisely what made
     /// its migrations unavoidable.
-    pub _reserved: [u8; 96],
+    pub _reserved: [u8; 56],
 }
