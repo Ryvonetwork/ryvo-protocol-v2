@@ -35,6 +35,7 @@ import {
 import {
   Batch,
   N_ROUTE,
+  N_UNI,
   RouteRecord,
   UnilateralRecord,
   awaitClearing,
@@ -48,6 +49,7 @@ import {
   openStaging,
   sealAndQueue,
   settle,
+  settleMeasured,
   stageBatch,
 } from "./clearing-client";
 
@@ -913,6 +915,74 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await assertSolvent();
   });
 
+  it("settles 64 direct channels in one transaction", async () => {
+    const channels: Chan[] = [];
+    for (let i = 0; i < N_UNI; i++) {
+      const channel = await openChannel(
+        directAgents[0],
+        gateway,
+        CHANNEL_KIND_DIRECT
+      );
+      await lock(channel, 1);
+      channels.push(channel);
+    }
+    const records = channels.map((channel) => uniRecord(channel, 1));
+    expect(
+      await clear(KIND_UNILATERAL, buildUnilateralBatch(records), N_UNI)
+    ).to.deep.equal(new Array(N_UNI).fill(true));
+    const metrics = await settleMeasured(
+      program,
+      staging,
+      Array.from({ length: N_UNI }, (_, i) => i),
+      (index) => [channels[index].key, gateway.balance]
+    );
+    console.log(
+      `    64 direct: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
+    );
+    expect(metrics.legacyBytes).to.be.at.most(1232);
+    expect(metrics.computeUnits).to.be.greaterThan(0);
+    expect(metrics.computeUnits).to.be.at.most(1_400_000);
+    for (const channel of channels) {
+      expect(await channelState(channel)).to.deep.equal({
+        settled: 1,
+        locked: 0,
+      });
+    }
+    await assertSolvent();
+  });
+
+  it("settles one routed commitment paying 16 providers", async () => {
+    while (providers.length < 16) providers.push(await makeParty());
+    const before = await channelState(routedAG);
+    const target = before.settled + 16;
+    const selected = providers.slice(0, 16);
+    const record = routeRecord(
+      routedAG,
+      before.settled,
+      target,
+      selected.map((provider) => ({ provider, amount: 1 }))
+    );
+    expect(
+      await clear(KIND_ROUTE, buildRouteBatch([record], gateway.participant), 1)
+    ).to.deep.equal([true]);
+    const metrics = await settleMeasured(program, staging, [0], () => [
+      routedAG.key,
+      gateway.balance,
+      ...selected.map((provider) => provider.balance),
+    ]);
+    console.log(
+      `    16 providers: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
+    );
+    expect(metrics.legacyBytes).to.be.at.most(1232);
+    expect(metrics.computeUnits).to.be.greaterThan(0);
+    expect(metrics.computeUnits).to.be.at.most(1_400_000);
+    expect(await channelState(routedAG)).to.deep.equal({
+      settled: target,
+      locked: before.locked - 16,
+    });
+    await assertSolvent();
+  });
+
   it("clears a full route batch of distinct agent channels", async () => {
     const channels: Chan[] = [];
     for (let i = 0; i < N_ROUTE; i++) {
@@ -933,17 +1003,22 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
         N_ROUTE
       )
     ).to.deep.equal(new Array(N_ROUTE).fill(true));
-    for (let i = 0; i < N_ROUTE; i += 8) {
-      const indices = Array.from(
-        { length: Math.min(8, N_ROUTE - i) },
-        (_, k) => i + k
-      );
-      await settle(program, staging, indices, (index) => [
+    const metrics = await settleMeasured(
+      program,
+      staging,
+      Array.from({ length: N_ROUTE }, (_, i) => i),
+      (index) => [
         channels[index].key,
         gateway.balance,
         providers[index % providers.length].balance,
-      ]);
-    }
+      ]
+    );
+    console.log(
+      `    32 routed: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
+    );
+    expect(metrics.legacyBytes).to.be.at.most(1232);
+    expect(metrics.computeUnits).to.be.greaterThan(0);
+    expect(metrics.computeUnits).to.be.at.most(1_400_000);
     for (const channel of channels) {
       expect(await channelState(channel)).to.deep.equal({
         settled: 3 * ONE,

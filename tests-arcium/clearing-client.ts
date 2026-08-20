@@ -15,6 +15,7 @@ import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
 import {
   AccountMeta,
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SystemProgram,
@@ -600,17 +601,12 @@ export function bitmapBits(bitmap: number[], count: number): boolean[] {
   );
 }
 
-/**
- * settle_channels for a set of indices. `accountsFor(i)` returns the per-commitment accounts in
- * the order the program expects (unilateral: [sourceBucket, payeeBalance]; route:
- * [sourceBucket, gatewayBalance, providerBalance x allocation count]).
- */
-export async function settle(
+async function settlementInstruction(
   program: Program<RyvoProtocol>,
   staging: PublicKey,
   indices: number[],
   accountsFor: (i: number) => PublicKey[]
-): Promise<string> {
+): Promise<TransactionInstruction> {
   const remaining: AccountMeta[] = indices.flatMap((i) =>
     accountsFor(i).map((pubkey) => ({
       pubkey,
@@ -625,7 +621,80 @@ export async function settle(
       clearingResult: clearingPda(program.programId, staging),
     })
     .remainingAccounts(remaining)
-    .rpc({ commitment: "confirmed" });
+    .instruction();
+}
+
+/**
+ * settle_channels for a set of indices. `accountsFor(i)` returns the per-commitment accounts in
+ * the order the program expects (unilateral: [sourceBucket, payeeBalance]; route:
+ * [sourceBucket, gatewayBalance, providerBalance x allocation count]).
+ */
+export async function settle(
+  program: Program<RyvoProtocol>,
+  staging: PublicKey,
+  indices: number[],
+  accountsFor: (i: number) => PublicKey[]
+): Promise<string> {
+  const ix = await settlementInstruction(
+    program,
+    staging,
+    indices,
+    accountsFor
+  );
+  return (program.provider as anchor.AnchorProvider).sendAndConfirm(
+    new anchor.web3.Transaction().add(ix),
+    [],
+    { commitment: "confirmed" }
+  );
+}
+
+export interface SettlementMeasurement {
+  signature: string;
+  legacyBytes: number;
+  uniqueAccounts: number;
+  computeUnits: number;
+}
+
+/** Send one maximum-budget legacy settlement and report its actual resource use. */
+export async function settleMeasured(
+  program: Program<RyvoProtocol>,
+  staging: PublicKey,
+  indices: number[],
+  accountsFor: (i: number) => PublicKey[]
+): Promise<SettlementMeasurement> {
+  const provider = program.provider as anchor.AnchorProvider;
+  const ix = await settlementInstruction(
+    program,
+    staging,
+    indices,
+    accountsFor
+  );
+  const budget = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
+  const legacyBytes = legacySize(provider.wallet.publicKey, [budget, ix]);
+  const unique = new Set<string>([
+    provider.wallet.publicKey.toBase58(),
+    budget.programId.toBase58(),
+    ix.programId.toBase58(),
+    ...budget.keys.map((meta) => meta.pubkey.toBase58()),
+    ...ix.keys.map((meta) => meta.pubkey.toBase58()),
+  ]);
+  const signature = await provider.sendAndConfirm(
+    new anchor.web3.Transaction().add(budget, ix),
+    [],
+    { commitment: "confirmed" }
+  );
+  const landed = await provider.connection.getTransaction(signature, {
+    commitment: "confirmed",
+    maxSupportedTransactionVersion: 0,
+  });
+  if (!landed)
+    throw new Error(`settlement transaction ${signature} was not found`);
+  return {
+    signature,
+    legacyBytes,
+    uniqueAccounts: unique.size,
+    computeUnits: Number(landed.meta?.computeUnitsConsumed ?? 0),
+  };
 }
 
 /** Return rent for a buffer whose current batch is fully settled (or was never queued). */
