@@ -32,10 +32,10 @@ pub struct Config {
     pub chain_id: u16,
     /// Next permanent participant id. Starts at 1; 0 is reserved for padded route allocations.
     pub next_participant_id: u64,
-    /// Next `Channel.channel_id` to hand out. Starts at 1; 0 is never a valid id. Commitments
+    /// Next channel id range to reserve. Starts at 1; 0 is never a valid id. Commitments
     /// name channels by this id rather than by their 32-byte address, which is what keeps a
-    /// staged record small enough to clear in bulk. Written only by `create_channel`, so
-    /// settlement never contends on it.
+    /// staged record small enough to clear in bulk. Written only by `initialize_channel_bucket`,
+    /// so settlement never contends on it.
     pub next_channel_id: u64,
     pub bump: u8,
     /// Singleton, so reserved space is cheap.

@@ -24,11 +24,11 @@
 //! # Staging: dense records in, slots out
 //!
 //! The relayer sends each commitment as a dense record — `stage_records(start, bytes)` with the
-//! direct `Channel` or routed bucket accounts as remaining accounts — and the *program* lays it out in
+//! source bucket accounts as remaining accounts — and the *program* lays it out in
 //! the buffer: ids/targets/allocations as plaintext u128 slots, signatures packed 26 bytes per
 //! slot, and registered signing keys copied from program accounts. The relayer never writes a
 //! key slot directly. A route batch uses one gateway and mint, so the gateway key is copied once
-//! from its `Participant`; each agent key and bucket address come from the routed channel bucket.
+//! from its `Participant`; each payer key and bucket address come from its channel bucket.
 //!
 //! Route records are compact and variable-width: unused provider allocation slots are omitted
 //! from staging transactions, then zero-filled by the program for the fixed-size circuit input.
@@ -36,7 +36,7 @@
 //! inputs by repeating commitment 0.
 //!
 //! ```text
-//! unilateral record (80 B):  channel_id u64 | target u64 | sig[64]                     + accounts: channel
+//! unilateral record (80 B):  channel_id u64 | target u64 | sig[64]                     + accounts: source bucket
 //! route record:              source_id u64 | base u64 | target u64 | count u8
 //!                            | (provider_id u64 | amount u64)[count]
 //!                            | sig_agent[64] | sig_gateway[64]
@@ -54,7 +54,7 @@
 //! address = one slot. All columns are program-written.
 //!
 //! ```text
-//! unilateral (N commitments, 7N slots):  ids[N] | sig[3N] | key[2N] | channel[N]
+//! unilateral (N commitments, 7N slots):  ids[N] | sig[3N] | key[2N] | source_bucket[N]
 //! route (N commitments, 27N + 2 slots): source_base[N] | target_count[N]
 //!                                        | allocations[16N] | sig_agent[3N]
 //!                                        | sig_gateway[3N] | key_agent[2N]
@@ -74,15 +74,15 @@ use crate::commitment::{
     pack_pair, pack_pubkey, pack_signature, unpack_pair, RouteAllocation, RouteCommitment,
     KIND_ROUTE, KIND_UNILATERAL, MAX_ROUTE_ALLOCATIONS, PUBKEY_SLOTS as KEY_SLOTS, SIG_SLOTS, SLOT,
 };
-use crate::constants::{CHANNEL_KIND_DIRECT, CLEARING_SEED, CONFIG_SEED, MAX_CLEARING_COMMITMENTS};
+use crate::constants::{
+    CHANNEL_KIND_DIRECT, CHANNEL_KIND_ROUTED, CLEARING_SEED, CONFIG_SEED, MAX_CLEARING_COMMITMENTS,
+};
 use crate::error::RyvoError;
 use crate::events::{
     BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled,
     RouteProviderPaid, RouteSettled,
 };
-use crate::state::{
-    Balance, Channel, Config, Participant, RoutedChannelBucket, ROUTED_BUCKET_VERSION,
-};
+use crate::state::{Balance, ChannelBucket, Config, Participant, CHANNEL_BUCKET_VERSION};
 use crate::{ArciumSignerAccount, ID, ID_CONST};
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
@@ -118,7 +118,7 @@ pub const SLOTS_OFFSET: usize = 8 + StagingBuffer::HEADER_LEN;
 pub const UNI_COL_IDS: usize = 0;
 pub const UNI_COL_SIG: usize = N_UNI;
 pub const UNI_COL_KEY: usize = 4 * N_UNI;
-pub const UNI_COL_CHANNEL: usize = 6 * N_UNI;
+pub const UNI_COL_BUCKET: usize = 6 * N_UNI;
 pub const RT_COL_SOURCE_BASE: usize = 0;
 pub const RT_COL_TARGET_COUNT: usize = N_ROUTE;
 pub const RT_COL_ALLOCATIONS: usize = 2 * N_ROUTE;
@@ -193,7 +193,7 @@ impl StagingBuffer {
                 (UNI_COL_IDS, 1),
                 (UNI_COL_SIG, SIG_SLOTS),
                 (UNI_COL_KEY, KEY_SLOTS),
-                (UNI_COL_CHANNEL, 1),
+                (UNI_COL_BUCKET, 1),
             ],
             _ => &[
                 (RT_COL_SOURCE_BASE, 1),
@@ -457,8 +457,8 @@ pub struct StageRecords<'info> {
     #[account(mut, has_one = relayer)]
     pub staging: AccountLoader<'info, StagingBuffer>,
     // remaining_accounts:
-    //   unilateral: one source Channel per commitment
-    //   route: gateway Participant once, then one routed bucket per commitment
+    //   unilateral: one direct source bucket per commitment
+    //   route: gateway Participant once, then one routed source bucket per commitment
 }
 
 fn u64_at(b: &[u8], o: usize) -> u64 {
@@ -466,8 +466,8 @@ fn u64_at(b: &[u8], o: usize) -> u64 {
 }
 
 /// Stage dense records for indices `start..start + n`. The program lays them out in slots and
-/// copies each channel's address and registered signing key from the `Channel` account itself,
-/// so the key staged for an index is always the one registered on the channel staged at that
+/// copies each bucket slot's address and registered signing key from the bucket account itself,
+/// so the key staged for an index is always the one registered for the channel id staged at that
 /// index. Bounds-checked against the batch size; the buffer must be open.
 ///
 /// It also refuses, up front, anything that could verify but never settle: the source channel
@@ -498,19 +498,19 @@ pub fn stage_records_handler<'info>(
                 let channel_id = u64_at(rec, 0);
                 s.slots[UNI_COL_IDS + i] = u128_slot(pack_pair(channel_id, u64_at(rec, 8)));
                 write_sig(&mut s.slots, UNI_COL_SIG + SIG_SLOTS * i, &rec[16..80]);
-                let ch = write_channel(
+                let source = write_bucket_source(
                     &mut s.slots,
                     UNI_COL_KEY + KEY_SLOTS * i,
-                    UNI_COL_CHANNEL + i,
+                    UNI_COL_BUCKET + i,
                     &accs[r],
+                    channel_id,
                 )?;
-                require!(ch.channel_id == channel_id, RyvoError::StagedRecordMismatch);
                 require!(
-                    ch.kind == CHANNEL_KIND_DIRECT,
+                    source.kind == CHANNEL_KIND_DIRECT,
                     RyvoError::InvalidChannelKind
                 );
                 require!(
-                    u64_at(rec, 8) > ch.settled_cumulative,
+                    u64_at(rec, 8) > source.settled_cumulative,
                     RyvoError::CommitmentAlreadySettled
                 );
                 s.staged_mask |= 1u64 << i;
@@ -536,7 +536,7 @@ pub fn stage_records_handler<'info>(
                 );
                 let allocation_count = data[cursor + 24] as usize;
                 require!(
-                    allocation_count >= 1 && allocation_count <= MAX_ROUTE_ALLOCATIONS,
+                    (1..=MAX_ROUTE_ALLOCATIONS).contains(&allocation_count),
                     RyvoError::InvalidRouteAllocations
                 );
                 let len = ROUTE_RECORD_BASE_LEN
@@ -608,7 +608,7 @@ pub fn stage_records_handler<'info>(
                     RT_COL_SIG_G + SIG_SLOTS * i,
                     &rec[signatures_at + 64..signatures_at + 128],
                 );
-                let source = write_routed_source(
+                let source = write_bucket_source(
                     &mut s.slots,
                     RT_COL_KEY_A + KEY_SLOTS * i,
                     RT_COL_SOURCE_BUCKET + i,
@@ -616,7 +616,11 @@ pub fn stage_records_handler<'info>(
                     source_id,
                 )?;
                 require!(
-                    source.gateway == gateway.key(),
+                    source.kind == CHANNEL_KIND_ROUTED,
+                    RyvoError::InvalidChannelKind
+                );
+                require!(
+                    source.payee == gateway.key(),
                     RyvoError::StagedRecordMismatch
                 );
                 require!(
@@ -654,41 +658,27 @@ fn write_sig(slots: &mut [[u8; SLOT]; MAX_SLOTS], at: usize, sig: &[u8]) {
     slots[at..at + SIG_SLOTS].copy_from_slice(&packed);
 }
 
-/// Address + registered key of a `Channel` (owner and discriminator checked by `Account`).
-/// Returns the channel so the caller can check the record against it.
-fn write_channel<'info>(
-    slots: &mut [[u8; SLOT]; MAX_SLOTS],
-    key_at: usize,
-    channel_at: usize,
-    info: &'info AccountInfo<'info>,
-) -> Result<Account<'info, Channel>> {
-    let channel: Account<Channel> = Account::try_from(info)?;
-    slots[channel_at] = info.key().to_bytes();
-    slots[key_at] = channel.signer_slots[0];
-    slots[key_at + 1] = channel.signer_slots[1];
-    Ok(channel)
-}
-
-struct RoutedSource {
-    gateway: Pubkey,
+struct BucketSource {
+    payee: Pubkey,
     mint: Pubkey,
+    kind: u8,
     settled_cumulative: u64,
 }
 
-/// Bucket address + registered key for the signed routed channel id. The id selects an occupied
+/// Bucket address + registered key for the signed channel id. The id selects an occupied
 /// permanent slot, so callers cannot substitute another agent's key or balance within the bucket.
-fn write_routed_source<'info>(
+fn write_bucket_source<'info>(
     slots: &mut [[u8; SLOT]; MAX_SLOTS],
     key_at: usize,
     bucket_at: usize,
     info: &'info AccountInfo<'info>,
     channel_id: u64,
-) -> Result<RoutedSource> {
-    let loader: AccountLoader<RoutedChannelBucket> = AccountLoader::try_from(info)?;
+) -> Result<BucketSource> {
+    let loader: AccountLoader<ChannelBucket> = AccountLoader::try_from(info)?;
     let bucket = loader.load()?;
     require!(
-        bucket.version == ROUTED_BUCKET_VERSION,
-        RyvoError::InvalidRoutedBucket
+        bucket.version == CHANNEL_BUCKET_VERSION,
+        RyvoError::InvalidChannelBucket
     );
     let slot = bucket
         .slot_for_channel_id(channel_id)
@@ -696,9 +686,10 @@ fn write_routed_source<'info>(
     slots[bucket_at] = info.key().to_bytes();
     slots[key_at] = bucket.signer_slot_0[slot];
     slots[key_at + 1] = bucket.signer_slot_1[slot];
-    Ok(RoutedSource {
-        gateway: bucket.gateway,
+    Ok(BucketSource {
+        payee: bucket.payee,
         mint: bucket.mint,
+        kind: bucket.kind,
         settled_cumulative: bucket.settled_cumulative[slot],
     })
 }
@@ -809,7 +800,7 @@ fn range(staging: Pubkey, col: usize, slots: usize) -> (Pubkey, u32, u32) {
 /// Shared body: seal the buffer, reset the result for this batch, bind it to the computation,
 /// and build the argument list in the circuit's parameter order. The domain comes from `Config`,
 /// never from the relayer, so a batch cannot be verified against a foreign deployment's domain;
-/// the keys were copied from the `Channel` accounts by `stage_records`, never written by the
+/// the keys were copied from channel bucket slots by `stage_records`, never written by the
 /// relayer.
 fn seal_common(
     staging_loader: &AccountLoader<StagingBuffer>,
@@ -1201,7 +1192,7 @@ pub struct SettleChannels<'info> {
     )]
     pub clearing_result: Box<Account<'info, ClearingResult>>,
     // remaining_accounts: per index, in order —
-    //   unilateral: [channel (mut), payee_balance (mut)]
+    //   unilateral: [source_bucket (mut), payee_balance (mut)]
     //   route:      [source_bucket (mut), gateway_balance (mut), provider_balance (mut) x count]
 }
 
@@ -1288,48 +1279,52 @@ fn settle_unilateral<'info>(
     accs: &'info [AccountInfo<'info>],
 ) -> Result<()> {
     let (channel_id, target) = unpack_pair(staged_u128(staging, UNI_COL_IDS, i));
-    let staged_channel = staged_pubkey(staging, UNI_COL_CHANNEL, i);
+    let staged_bucket = staged_pubkey(staging, UNI_COL_BUCKET, i);
 
-    // The circuit verified the signature under the key stored in the channel account at
-    // `staged_channel`; the account we are handed must be that one, and it must carry the id
-    // that was inside the signed message.
+    // The circuit verified the signature under the key stored in this bucket slot. Settlement
+    // rebinds the signed channel id to the same bucket and occupied slot.
     require!(
-        accs[0].key() == staged_channel,
+        accs[0].key() == staged_bucket,
         RyvoError::SettlementChannelMismatch
     );
-    let mut channel = load_mut::<Channel>(&accs[0])?;
+    require!(accs[0].is_writable, RyvoError::InvalidSettlementAccounts);
+    let bucket_loader: AccountLoader<ChannelBucket> = AccountLoader::try_from(&accs[0])?;
+    let mut bucket = bucket_loader.load_mut()?;
     let mut payee_balance = load_mut::<Balance>(&accs[1])?;
     require!(
-        channel.channel_id == channel_id,
-        RyvoError::SettlementChannelMismatch
+        bucket.version == CHANNEL_BUCKET_VERSION && bucket.kind == CHANNEL_KIND_DIRECT,
+        RyvoError::InvalidChannelBucket
     );
+    let slot = bucket
+        .slot_for_channel_id(channel_id)
+        .ok_or(RyvoError::SettlementChannelMismatch)?;
     require!(
-        channel.kind == CHANNEL_KIND_DIRECT,
-        RyvoError::InvalidChannelKind
-    );
-    require!(
-        payee_balance.participant == channel.payee && payee_balance.mint == channel.mint,
+        payee_balance.participant == bucket.payee && payee_balance.mint == bucket.mint,
         RyvoError::SettlementBalanceMismatch
     );
 
-    let moved = payable(target, channel.settled_cumulative, channel.locked_balance);
+    let moved = payable(
+        target,
+        bucket.settled_cumulative[slot],
+        bucket.locked_balance[slot],
+    );
     if moved > 0 {
-        channel.locked_balance -= moved;
-        channel.settled_cumulative += moved;
+        bucket.locked_balance[slot] -= moved;
+        bucket.settled_cumulative[slot] += moved;
         payee_balance.available = payee_balance
             .available
             .checked_add(moved)
             .ok_or(RyvoError::MathOverflow)?;
-        channel.exit(&crate::ID)?;
         payee_balance.exit(&crate::ID)?;
     }
     emit!(ChannelSettled {
-        channel: channel.key(),
+        bucket: staged_bucket,
+        slot: slot as u8,
         channel_id,
         target_cumulative: target,
         moved,
-        settled_cumulative: channel.settled_cumulative,
-        locked_balance: channel.locked_balance,
+        settled_cumulative: bucket.settled_cumulative[slot],
+        locked_balance: bucket.locked_balance[slot],
     });
     Ok(())
 }
@@ -1356,18 +1351,18 @@ fn settle_route<'info>(
         RyvoError::SettlementChannelMismatch
     );
     require!(accs[0].is_writable, RyvoError::InvalidSettlementAccounts);
-    let bucket_loader: AccountLoader<RoutedChannelBucket> = AccountLoader::try_from(&accs[0])?;
+    let bucket_loader: AccountLoader<ChannelBucket> = AccountLoader::try_from(&accs[0])?;
     let mut bucket = bucket_loader.load_mut()?;
     let mut gateway_balance = load_mut::<Balance>(&accs[1])?;
     require!(
-        bucket.version == ROUTED_BUCKET_VERSION,
-        RyvoError::InvalidRoutedBucket
+        bucket.version == CHANNEL_BUCKET_VERSION && bucket.kind == CHANNEL_KIND_ROUTED,
+        RyvoError::InvalidChannelBucket
     );
     let slot = bucket
         .slot_for_channel_id(source_id)
         .ok_or(RyvoError::SettlementChannelMismatch)?;
     require!(
-        bucket.gateway == staging.route_gateway && bucket.mint == staging.route_mint,
+        bucket.payee == staging.route_gateway && bucket.mint == staging.route_mint,
         RyvoError::SettlementRouteMismatch
     );
     require!(

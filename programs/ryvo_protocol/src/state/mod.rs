@@ -1,21 +1,18 @@
 pub mod balance;
-pub mod channel;
+pub mod channel_bucket;
 pub mod config;
 pub mod participant;
-pub mod routed_channel_bucket;
 pub mod token_config;
 
 pub use balance::*;
-pub use channel::*;
+pub use channel_bucket::*;
 pub use config::*;
 pub use participant::*;
-pub use routed_channel_bucket::*;
 pub use token_config::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anchor_lang::prelude::Pubkey;
     use anchor_lang::Space;
 
     /// Pins every account size. A field added without deliberately updating this test is a
@@ -29,11 +26,7 @@ mod tests {
         assert_eq!(Participant::INIT_SPACE, 32 + 32 + 8 + 1 + 56);
         assert_eq!(TokenConfig::INIT_SPACE, 32 + 32 + 1 + 1 + 1 + 96);
         assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 8 + 1 + 88);
-        assert_eq!(
-            Channel::INIT_SPACE,
-            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 64 + 1 + 1 + 87
-        );
-        assert_eq!(RoutedChannelBucket::SPACE, 32_944);
+        assert_eq!(ChannelBucket::SPACE, 32_944);
     }
 
     /// Every non-singleton account keeps meaningful reserved space. Participant used 40 bytes
@@ -45,47 +38,12 @@ mod tests {
             ("Participant", 56usize),
             ("TokenConfig", 96),
             ("Balance", 88),
-            ("Channel", 87),
         ] {
             assert!(
                 reserved >= MIN_RESERVED,
                 "{name} reserves {reserved} bytes, below the {MIN_RESERVED}-byte floor"
             );
         }
-    }
-
-    /// The circuit reads `signer_slots` straight out of the account bytes by offset, so the
-    /// offset is part of the wire contract with the staging client and the Arcium argument list.
-    #[test]
-    fn channel_signer_slots_offset_is_pinned() {
-        use anchor_lang::AccountSerialize;
-        let mut c = Channel {
-            payer: Pubkey::new_unique(),
-            payee: Pubkey::new_unique(),
-            mint: Pubkey::new_unique(),
-            authorized_signer: Pubkey::new_unique(),
-            settled_cumulative: 1,
-            locked_balance: 2,
-            pending_unlock_amount: 3,
-            pending_unlock_at: 4,
-            channel_id: 5,
-            signer_slots: [[0xAA; 32], [0xBB; 32]],
-            bump: 6,
-            kind: crate::constants::CHANNEL_KIND_ROUTED,
-            _reserved: [0u8; 87],
-        };
-        c.signer_slots[0][31] = 0x11;
-        let mut bytes = Vec::new();
-        c.try_serialize(&mut bytes).unwrap();
-        let off = Channel::SIGNER_SLOTS_OFFSET;
-        assert_eq!(&bytes[off..off + 32], &c.signer_slots[0]);
-        assert_eq!(&bytes[off + 32..off + 64], &c.signer_slots[1]);
-        assert_eq!(bytes[off + 64], 6, "bump follows signer_slots");
-        assert_eq!(
-            bytes[off + 65],
-            crate::constants::CHANNEL_KIND_ROUTED,
-            "kind follows bump"
-        );
     }
 
     /// `Balance` holds nothing but free money and its identity. No pending-withdrawal state,

@@ -65,7 +65,7 @@ pub struct UnilateralCommitment {
     /// Deployment replay boundary; must equal `Config.message_domain`.
     pub message_domain: [u8; 16],
     pub channel_id: u64,
-    /// New cumulative authorisation. Must strictly exceed `Channel.settled_cumulative`.
+    /// New cumulative authorisation. Must strictly exceed the bucket slot's settled cumulative.
     pub target_cumulative: u64,
 }
 
@@ -286,7 +286,7 @@ pub fn digest_of(canonical: &[u8]) -> [u8; 32] {
 // 214 usable bits per element => 26 bytes per slot, little-endian within the slot. A 32-byte
 // public key is 2 slots (26 + 6), a 64-byte signature is 3 (26 + 26 + 12). These are the exact
 // bytes `Pack<VerifyingKey>` / `Pack<Sig>` unpack inside the circuit; `stage_records` writes
-// them from the record and the `Channel` account.
+// them from the record and the channel bucket slot.
 
 pub const SLOT: usize = 32;
 pub const BYTES_PER_SLOT: usize = 26;

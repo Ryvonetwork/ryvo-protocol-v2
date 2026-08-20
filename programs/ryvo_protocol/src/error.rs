@@ -47,12 +47,12 @@ pub enum RyvoError {
     NoChannelUnlockPending,
     #[msg("Channel unlock timelock has not elapsed")]
     ChannelUnlockLocked,
-    #[msg("Routed channel bucket does not match the gateway or mint")]
-    InvalidRoutedBucket,
-    #[msg("Routed channel slot is already occupied")]
-    RoutedSlotOccupied,
-    #[msg("Routed channel slot is empty or does not belong to this payer")]
-    InvalidRoutedSlot,
+    #[msg("Channel bucket does not match the payee, mint, or channel type")]
+    InvalidChannelBucket,
+    #[msg("Channel bucket slot is already occupied")]
+    ChannelSlotOccupied,
+    #[msg("Channel bucket slot is empty or does not belong to this payer")]
+    InvalidChannelSlot,
     // --- commitment message ---
     // Exercised by unit tests in v1; the settlement path that consumes them lands in v2.
     #[msg("Commitment message is malformed")]

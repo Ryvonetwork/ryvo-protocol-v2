@@ -14,7 +14,7 @@ use anchor_lang::prelude::*;
 ///
 /// Solvency, in one equation:
 ///
-/// `vault.amount == sum(Balance.available) + sum(Channel.locked_balance)`
+/// `vault.amount == sum(Balance.available) + sum(ChannelBucket.locked_balance)`
 #[account]
 #[derive(InitSpace)]
 pub struct Balance {

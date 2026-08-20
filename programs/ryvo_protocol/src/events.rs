@@ -73,95 +73,55 @@ pub struct Withdrawn {
 }
 
 #[event]
+pub struct ChannelBucketCreated {
+    pub bucket: Pubkey,
+    pub payee: Pubkey,
+    pub mint: Pubkey,
+    pub base_channel_id: u64,
+    pub capacity: u16,
+    pub kind: u8,
+}
+
+#[event]
 pub struct ChannelCreated {
-    pub channel: Pubkey,
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
     pub payer: Pubkey,
     pub payee: Pubkey,
     pub mint: Pubkey,
     pub authorized_signer: Pubkey,
-    pub channel_id: u64,
     pub kind: u8,
 }
 
 #[event]
 pub struct ChannelFundsLocked {
-    pub channel: Pubkey,
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
     pub amount: u64,
     pub locked_balance: u64,
 }
 
-/// A payer locked more collateral while an unlock request was outstanding; the request is void.
 #[event]
 pub struct ChannelUnlockCancelled {
-    pub channel: Pubkey,
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
     pub cancelled_amount: u64,
 }
 
 #[event]
 pub struct ChannelUnlockRequested {
-    pub channel: Pubkey,
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
     pub requested_amount: u64,
     pub unlock_at: i64,
 }
 
 #[event]
 pub struct ChannelFundsUnlocked {
-    pub channel: Pubkey,
-    /// `min(pending_unlock_amount, locked_balance)` at execute time — settlement may already
-    /// have consumed part of the lock.
-    pub released_amount: u64,
-    pub remaining_locked: u64,
-    pub cooperative: bool,
-}
-
-#[event]
-pub struct RoutedBucketCreated {
-    pub bucket: Pubkey,
-    pub gateway: Pubkey,
-    pub mint: Pubkey,
-    pub base_channel_id: u64,
-    pub capacity: u16,
-}
-
-#[event]
-pub struct RoutedChannelCreated {
-    pub bucket: Pubkey,
-    pub slot: u8,
-    pub channel_id: u64,
-    pub payer: Pubkey,
-    pub gateway: Pubkey,
-    pub mint: Pubkey,
-    pub authorized_signer: Pubkey,
-}
-
-#[event]
-pub struct RoutedChannelFundsLocked {
-    pub bucket: Pubkey,
-    pub slot: u8,
-    pub channel_id: u64,
-    pub amount: u64,
-    pub locked_balance: u64,
-}
-
-#[event]
-pub struct RoutedChannelUnlockCancelled {
-    pub bucket: Pubkey,
-    pub slot: u8,
-    pub channel_id: u64,
-    pub cancelled_amount: u64,
-}
-
-#[event]
-pub struct RoutedChannelUnlockRequested {
-    pub bucket: Pubkey,
-    pub slot: u8,
-    pub channel_id: u64,
-    pub requested_amount: u64,
-    pub unlock_at: i64,
-}
-
-#[event]
-pub struct RoutedChannelFundsUnlocked {
     pub bucket: Pubkey,
     pub slot: u8,
     pub channel_id: u64,
@@ -191,7 +151,8 @@ pub struct BatchCleared {
 
 #[event]
 pub struct ChannelSettled {
-    pub channel: Pubkey,
+    pub bucket: Pubkey,
+    pub slot: u8,
     pub channel_id: u64,
     pub target_cumulative: u64,
     /// `min(target - settled, locked)`. Zero means the record was a no-op skip.

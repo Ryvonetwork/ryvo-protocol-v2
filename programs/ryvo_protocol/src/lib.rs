@@ -102,75 +102,44 @@ pub mod ryvo_protocol {
 
     // --- channels ---
 
-    /// Open a standalone direct channel using the payer's immutable Arcis signer. Routed channels
-    /// are created as slots through `initialize_routed_bucket` + `create_routed_channel`.
-    pub fn create_channel(ctx: Context<CreateChannel>, kind: u8) -> Result<()> {
-        instructions::channel::create_channel_handler(ctx, kind)
+    /// Initialize one 256-slot bucket for a payee, mint, and channel type.
+    pub fn initialize_channel_bucket(
+        ctx: Context<InitializeChannelBucket>,
+        kind: u8,
+    ) -> Result<()> {
+        instructions::channel::initialize_channel_bucket_handler(ctx, kind)
     }
 
-    pub fn lock_channel_funds(ctx: Context<PayerChannelOp>, amount: u64) -> Result<()> {
-        instructions::channel::lock_channel_funds_handler(ctx, amount)
+    /// Permanently assign one bucket slot. The payer and payee both sign.
+    pub fn create_channel(ctx: Context<CreateChannel>, slot: u8) -> Result<()> {
+        instructions::channel::create_channel_handler(ctx, slot)
     }
 
-    pub fn request_unlock_channel_funds(ctx: Context<PayerChannelOp>, amount: u64) -> Result<()> {
-        instructions::channel::request_unlock_channel_funds_handler(ctx, amount)
+    pub fn lock_channel_funds(ctx: Context<PayerChannelOp>, slot: u8, amount: u64) -> Result<()> {
+        instructions::channel::lock_channel_funds_handler(ctx, slot, amount)
+    }
+
+    pub fn request_unlock_channel_funds(
+        ctx: Context<PayerChannelOp>,
+        slot: u8,
+        amount: u64,
+    ) -> Result<()> {
+        instructions::channel::request_unlock_channel_funds_handler(ctx, slot, amount)
     }
 
     /// Payer-signed, not permissionless: a stale request must not be triggerable by a stranger.
-    pub fn execute_unlock_channel_funds(ctx: Context<PayerChannelOp>) -> Result<()> {
-        instructions::channel::execute_unlock_channel_funds_handler(ctx)
+    pub fn execute_unlock_channel_funds(ctx: Context<PayerChannelOp>, slot: u8) -> Result<()> {
+        instructions::channel::execute_unlock_channel_funds_handler(ctx, slot)
     }
 
     /// Immediate release with both parties signing — no timelock, since the party it protects
     /// is consenting.
     pub fn cooperative_unlock_channel_funds(
         ctx: Context<CooperativeUnlockChannelFunds>,
-        amount: u64,
-    ) -> Result<()> {
-        instructions::channel::cooperative_unlock_channel_funds_handler(ctx, amount)
-    }
-
-    /// Initialize one 256-slot routed channel bucket for a gateway and mint.
-    pub fn initialize_routed_bucket(ctx: Context<InitializeRoutedBucket>) -> Result<()> {
-        instructions::routed_channel::initialize_routed_bucket_handler(ctx)
-    }
-
-    /// Permanently assign one bucket slot to an agent. Both agent and gateway sign.
-    pub fn create_routed_channel(ctx: Context<CreateRoutedChannel>, slot: u8) -> Result<()> {
-        instructions::routed_channel::create_routed_channel_handler(ctx, slot)
-    }
-
-    pub fn lock_routed_channel_funds(
-        ctx: Context<RoutedChannelOp>,
         slot: u8,
         amount: u64,
     ) -> Result<()> {
-        instructions::routed_channel::lock_routed_channel_funds_handler(ctx, slot, amount)
-    }
-
-    pub fn request_unlock_routed_channel_funds(
-        ctx: Context<RoutedChannelOp>,
-        slot: u8,
-        amount: u64,
-    ) -> Result<()> {
-        instructions::routed_channel::request_unlock_routed_channel_funds_handler(ctx, slot, amount)
-    }
-
-    pub fn execute_unlock_routed_channel_funds(
-        ctx: Context<RoutedChannelOp>,
-        slot: u8,
-    ) -> Result<()> {
-        instructions::routed_channel::execute_unlock_routed_channel_funds_handler(ctx, slot)
-    }
-
-    pub fn cooperative_unlock_routed_channel_funds(
-        ctx: Context<CooperativeUnlockRoutedChannelFunds>,
-        slot: u8,
-        amount: u64,
-    ) -> Result<()> {
-        instructions::routed_channel::cooperative_unlock_routed_channel_funds_handler(
-            ctx, slot, amount,
-        )
+        instructions::channel::cooperative_unlock_channel_funds_handler(ctx, slot, amount)
     }
 
     // --- clearing: one-time setup ---

@@ -19,12 +19,9 @@ pub const VAULT_SEED: &str = "vault";
 #[constant]
 pub const BALANCE_SEED: &str = "balance";
 
+/// Permanent channels stored in one bucket account.
 #[constant]
-pub const CHANNEL_SEED: &str = "channel";
-
-/// Permanent routed channels stored in one bucket account.
-#[constant]
-pub const ROUTED_BUCKET_CAPACITY: u16 = 256;
+pub const CHANNEL_BUCKET_CAPACITY: u16 = 256;
 
 /// Clearing-result capacity reserved for the off-chain-input circuit path.
 #[constant]
@@ -33,7 +30,7 @@ pub const MAX_CLEARING_COMMITMENTS: u16 = 256;
 #[constant]
 pub const CLEARING_SEED: &str = "clearing";
 
-// Stable client values. Standalone `Channel` accounts are Direct; Routed channels live in buckets.
+// Stable client values. A bucket has exactly one kind; its slots cannot cross commitment types.
 
 #[constant]
 pub const CHANNEL_KIND_DIRECT: u8 = 1;
