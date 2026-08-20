@@ -15,10 +15,11 @@ BASE_FEE = 5000               # lamports per signature
 LEGACY_TX_BYTES = 1232
 V1_TX_BYTES = 4096            # transaction v1 (gate not yet active on devnet)
 
-# one-provider route: compact data (153 + 16) + one repeated source-bucket account index.
-# The bucket pubkey and gateway Participant are unique once per staging transaction, not per route.
+# One-provider route: compact data (153 + 16) + one repeated source-bucket account index.
+# Direct: 80 bytes + one repeated source-bucket account index. When commitments share a payee,
+# the bucket pubkey is unique once per staging transaction, not once per commitment.
 ROUTE_WIRE = 169 + 1          # 170
-UNI_WIRE = 80 + 33            # 113
+UNI_WIRE = 80 + 1             # 81
 TX_OVERHEAD = 217             # signature, header, 3 fixed accounts, blockhash, ix framing (legacy)
 def records_per_tx(wire, tx_bytes, extra=0):
     return (tx_bytes - TX_OVERHEAD - extra) // wire
@@ -28,7 +29,13 @@ ARCIUM_FEE_LAMPORTS = 10_023
 COMPUTATION_RENT_LAMPORTS = 5_679_360       # 678-byte computation account; reclaimed in the next seal tx (net zero in steady state)
 SETTLE_CU_PER_ROUTE = 3_000                 # estimate until the new direct-credit path is measured
 SETTLE_ROUTES_PER_TX = 32                   # current route circuit returns 32 results
-SETTLE_UNI_PER_TX = 58                      # 58 channels + 1 shared payee balance + 5 (lock limit)
+SETTLE_UNI_PER_TX = 64                      # full circuit batch when channels share a bucket/payee
+# Off-chain sourcing removes staging, not settlement data. These conservative v1/legacy limits
+# reserve room for ids, targets, active provider allocations, account indices, and tx framing.
+OFFCHAIN_ROUTE_SETTLE_LEGACY = 20
+OFFCHAIN_UNI_SETTLE_LEGACY = 50
+OFFCHAIN_ROUTE_SETTLE_V1 = 80
+OFFCHAIN_UNI_SETTLE_V1 = 200
 STAGE_TX_CU = 10_232                        # measured: 4 routes packed on-chain per tx
 QUEUE_TX_CU = 177_007                       # prior measurement; remeasure for the new N=32 route circuit
 OPEN_TX_CU = 12_000                         # est
@@ -41,8 +48,8 @@ def ceil(a, b):
 def ryvo(n_records, N, kind, tx_bytes, mode, reuse, settle_per_tx):
     batches = ceil(n_records, N)
     if mode == "offchain":   # hypothetical: Arcium reads ids/targets/keys/sigs off-chain; nothing is staged.
-        # settle_channels then carries ids+targets (32 B/route, 16 B/unilateral) as instruction data and the
-        # circuit's revealed digest binds them to what was verified; settle_per_tx already reflects that.
+        # Settlement still carries the verified commitment fields and provider allocations as
+        # instruction data. A circuit output/root must bind those bytes to what Arcium verified.
         stage_tx = 0
     elif mode == "prev":   # slot staging of ids/sigs (8 slots/route, 4/uni, 30 per tx, tail merged) + stage_channels (30 accounts/tx)
         slots = N * (8 if kind == "route" else 4)
@@ -93,13 +100,13 @@ for kind, base_settlements in (("route", 1), ("unilateral", 1)):
     configs = [
         ("first deployment: N=32, slot staging, keys staged, open/close per batch", 32, LEGACY_TX_BYTES, "first", False, 32),
         ("previous: N=64 uni / 32 route, keys copied on-chain, buffer reuse",       32 if kind == "route" else 64, LEGACY_TX_BYTES, "prev", True, 32),
-        ("NOW: routed channels share 256-slot buckets; N=32 route / N=64 direct",      32 if kind == "route" else 64, LEGACY_TX_BYTES, "dense", True, settle_per),
+        ("NOW: all channels use 256-slot payee buckets; N=32 route / N=64 direct",     32 if kind == "route" else 64, LEGACY_TX_BYTES, "dense", True, settle_per),
         ("NOW + transaction v1",                                                     32 if kind == "route" else 64, V1_TX_BYTES, "dense", True, settle_per),
         ("NOW + v1 + 128 account locks",                                             32 if kind == "route" else 64, V1_TX_BYTES, "dense", True, settle_per),
         # hypothetical: Arcium sources inputs off-chain (no staging at all); settle carries ids+targets as data
-        ("OFF-CHAIN INPUTS, legacy tx, 64 locks, N=64",                             64, LEGACY_TX_BYTES, "offchain", True, 28 if kind == "route" else 54),
+        ("OFF-CHAIN INPUTS, legacy tx, 64 locks, N=64",                             64, LEGACY_TX_BYTES, "offchain", True, OFFCHAIN_ROUTE_SETTLE_LEGACY if kind == "route" else OFFCHAIN_UNI_SETTLE_LEGACY),
         ("OFF-CHAIN INPUTS + v1 + 128 locks, N=64",                                 64, V1_TX_BYTES, "offchain", True, 64),
-        ("OFF-CHAIN INPUTS + v1, N=256 (reserved bitmap + 256-slot routed bucket)",    256, V1_TX_BYTES, "offchain", True, 256 if kind == "route" else 122),
+        ("OFF-CHAIN INPUTS + v1, N=256 (settlement data split as needed)",            256, V1_TX_BYTES, "offchain", True, OFFCHAIN_ROUTE_SETTLE_V1 if kind == "route" else OFFCHAIN_UNI_SETTLE_V1),
     ]
     for label, N, txb, mode, reuse, sp in configs:
         tx, cu, per_batch, batches = ryvo(N_REC, N, kind, txb, mode, reuse, sp)
