@@ -7,7 +7,7 @@ import * as fs from "fs";
 import * as os from "os";
 
 export const BPF_LOADER_UPGRADEABLE = new PublicKey(
-  "BPFLoaderUpgradeab1e11111111111111111111111",
+  "BPFLoaderUpgradeab1e11111111111111111111111"
 );
 
 /**
@@ -31,7 +31,7 @@ export function setupProvider(): anchor.AnchorProvider {
   const base = anchor.AnchorProvider.env();
   const connection = new anchor.web3.Connection(
     process.env.ANCHOR_PROVIDER_URL ?? "http://127.0.0.1:8899",
-    "confirmed",
+    "confirmed"
   );
   const provider = new anchor.AnchorProvider(connection, base.wallet, {
     commitment: "confirmed",
@@ -55,8 +55,10 @@ export function protocolAuthority(): Keypair {
 export function localWallet(): Keypair {
   return Keypair.fromSecretKey(
     new Uint8Array(
-      JSON.parse(fs.readFileSync(`${os.homedir()}/.config/solana/id.json`, "utf8")),
-    ),
+      JSON.parse(
+        fs.readFileSync(`${os.homedir()}/.config/solana/id.json`, "utf8")
+      )
+    )
   );
 }
 
@@ -66,42 +68,27 @@ export const seeds = {
   participant: (programId: PublicKey, owner: PublicKey) =>
     PublicKey.findProgramAddressSync(
       [Buffer.from("participant"), owner.toBuffer()],
-      programId,
+      programId
     )[0],
   tokenConfig: (programId: PublicKey, mint: PublicKey) =>
     PublicKey.findProgramAddressSync(
       [Buffer.from("token"), mint.toBuffer()],
-      programId,
+      programId
     )[0],
   vault: (programId: PublicKey, mint: PublicKey) =>
     PublicKey.findProgramAddressSync(
       [Buffer.from("vault"), mint.toBuffer()],
-      programId,
+      programId
     )[0],
   balance: (programId: PublicKey, participant: PublicKey, mint: PublicKey) =>
     PublicKey.findProgramAddressSync(
       [Buffer.from("balance"), participant.toBuffer(), mint.toBuffer()],
-      programId,
-    )[0],
-  channel: (
-    programId: PublicKey,
-    payer: PublicKey,
-    payee: PublicKey,
-    mint: PublicKey,
-  ) =>
-    PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("channel"),
-        payer.toBuffer(),
-        payee.toBuffer(),
-        mint.toBuffer(),
-      ],
-      programId,
+      programId
     )[0],
   programData: (programId: PublicKey) =>
     PublicKey.findProgramAddressSync(
       [programId.toBuffer()],
-      BPF_LOADER_UPGRADEABLE,
+      BPF_LOADER_UPGRADEABLE
     )[0],
 };
 
@@ -109,11 +96,11 @@ export const seeds = {
 export async function fund(
   provider: anchor.AnchorProvider,
   who: PublicKey,
-  sol = 5,
+  sol = 5
 ) {
   const sig = await provider.connection.requestAirdrop(
     who,
-    sol * anchor.web3.LAMPORTS_PER_SOL,
+    sol * anchor.web3.LAMPORTS_PER_SOL
   );
   await provider.connection.confirmTransaction(sig, "confirmed");
 }
@@ -125,7 +112,7 @@ export async function fund(
 export async function ensureConfig(
   program: Program<RyvoProtocol>,
   provider: anchor.AnchorProvider,
-  authority: Keypair,
+  authority: Keypair
 ): Promise<void> {
   // The authority is the rent payer for authority-gated `init` accounts (register_token), so it
   // needs lamports of its own — Anchor's provider wallet pays fees but not another account's rent.
@@ -155,7 +142,7 @@ export async function ensureConfig(
 /** Create a legacy SPL mint owned by the local wallet. */
 export async function newMint(
   provider: anchor.AnchorProvider,
-  decimals = 6,
+  decimals = 6
 ): Promise<PublicKey> {
   const payer = localWallet();
   return createMint(
@@ -166,14 +153,14 @@ export async function newMint(
     decimals,
     undefined,
     { commitment: "confirmed" },
-    TOKEN_PROGRAM_ID,
+    TOKEN_PROGRAM_ID
   );
 }
 
 /** Assert a promise rejects, optionally matching the error text. */
 export async function expectReject(
   p: Promise<unknown>,
-  match?: RegExp | string,
+  match?: RegExp | string
 ): Promise<string> {
   try {
     await p;

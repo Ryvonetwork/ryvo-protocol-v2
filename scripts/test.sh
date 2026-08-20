@@ -7,8 +7,9 @@
 # being front-run — is uncallable. Here we run our own validator and deploy with our own wallet,
 # so the upgrade authority is a key we hold. That also matches how a real deployment works.
 #
-# NOTE: always `pkill -x`, never `pkill -f`, for the validator. `-f` matches this script's own
-# command line (which contains the string) and kills the harness itself.
+# NOTE: Linux truncates the validator's process name to 15 bytes (`solana-test-val`). Always use
+# that exact name, never `pkill -f`: `-f` also matches this script's command line and kills the
+# harness itself.
 set -euo pipefail
 
 RPC_URL="${RPC_URL:-http://127.0.0.1:8899}"
@@ -17,11 +18,11 @@ WALLET="${WALLET:-$HOME/.config/solana/id.json}"
 PROGRAM_SO="target/deploy/ryvo_protocol.so"
 PROGRAM_KEYPAIR="target/deploy/ryvo_protocol-keypair.json"
 
-cleanup() { pkill -x solana-test-validator 2>/dev/null || true; }
+cleanup() { pkill -x solana-test-val 2>/dev/null || true; }
 trap cleanup EXIT
 
 echo "==> stopping any running validator"
-pkill -x solana-test-validator 2>/dev/null || true
+pkill -x solana-test-val 2>/dev/null || true
 sleep 2
 rm -rf "$LEDGER"
 

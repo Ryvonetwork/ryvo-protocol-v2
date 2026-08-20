@@ -307,7 +307,7 @@ export function deriveArcisSignerSeed(walletSeed: Uint8Array): Buffer {
 export interface ArcisSigner {
   /** Never leaves the agent. Recomputed on demand rather than stored. */
   seed: Buffer;
-  /** The 32 bytes registered on-chain as `Channel.authorized_signer`. */
+  /** The 32 bytes registered in each on-chain channel bucket slot. */
   publicKey: Buffer;
 }
 

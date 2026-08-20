@@ -76,6 +76,7 @@ const CIRCUIT_BASE_URL =
   "https://raw.githubusercontent.com/Ryvonetwork/ryvo-protocol-v2/03d81142aedf859515aabf688226b8eea4e3b71f/circuits";
 const DEVNET_CHAIN_ID = 1;
 const CHANNEL_TIMELOCK = 10;
+const CHANNEL_KIND_ROUTED = 2;
 const AGENTS = Number(process.env.RYVO_AGENTS ?? 100);
 const PROVIDERS = Number(process.env.RYVO_PROVIDERS ?? 10);
 const ONE = 1_000_000; // 6 decimals
@@ -173,11 +174,6 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     balance: (p: PublicKey, m: PublicKey) =>
       PublicKey.findProgramAddressSync(
         [Buffer.from("balance"), p.toBuffer(), m.toBuffer()],
-        programId
-      )[0],
-    channel: (a: PublicKey, b: PublicKey, m: PublicKey) =>
-      PublicKey.findProgramAddressSync(
-        [Buffer.from("channel"), a.toBuffer(), b.toBuffer(), m.toBuffer()],
         programId
       )[0],
     programData: PublicKey.findProgramAddressSync(
@@ -412,14 +408,14 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       bucketSpace
     );
     await program.methods
-      .initializeRoutedBucket()
+      .initializeChannelBucket(CHANNEL_KIND_ROUTED)
       .accounts({
-        gatewayOwner: gateway.owner.publicKey,
+        payeeOwner: gateway.owner.publicKey,
         config: pda.config,
-        gatewayParticipant: gateway.participant,
+        payeeParticipant: gateway.participant,
         mint,
         tokenConfig,
-        gatewayBalance: gateway.balance,
+        payeeBalance: gateway.balance,
         bucket: bucketKeypair.publicKey,
       })
       .preInstructions([
@@ -435,24 +431,22 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       .rpc({ commitment: "confirmed" });
     stats.tx.setup++;
     routedBucket = bucketKeypair.publicKey;
-    const bucketState = await program.account.routedChannelBucket.fetch(
-      routedBucket
-    );
+    const bucketState = await program.account.channelBucket.fetch(routedBucket);
     routedBucketBaseId = BigInt(bucketState.baseChannelId.toString());
 
     // All agent -> gateway source channels occupy permanent slots in one shared bucket.
     const openChannel = async (from: Party, slot: number): Promise<Chan> => {
       const tx = new anchor.web3.Transaction().add(
         await program.methods
-          .createRoutedChannel(slot)
+          .createChannel(slot)
           .accounts({
             payerOwner: from.owner.publicKey,
-            gatewayOwner: gateway.owner.publicKey,
+            payeeOwner: gateway.owner.publicKey,
             payerParticipant: from.participant,
-            gatewayParticipant: gateway.participant,
+            payeeParticipant: gateway.participant,
             bucket: routedBucket,
             payerBalance: from.balance,
-            gatewayBalance: gateway.balance,
+            payeeBalance: gateway.balance,
           })
           .instruction()
       );
@@ -520,7 +514,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
           })
           .instruction(),
         await program.methods
-          .lockRoutedChannelFunds(chanAG[i].slot, new anchor.BN(AGENT_LOCK))
+          .lockChannelFunds(chanAG[i].slot, new anchor.BN(AGENT_LOCK))
           .accounts({
             payerOwner: a.owner.publicKey,
             payerParticipant: a.participant,
@@ -794,9 +788,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
         expProvider[j]
       );
     }
-    const bucket = await program.account.routedChannelBucket.fetch(
-      routedBucket
-    );
+    const bucket = await program.account.channelBucket.fetch(routedBucket);
     for (let i = 0; i < AGENTS; i++) {
       expect(
         bucket.settledCumulative[chanAG[i].slot].toNumber(),

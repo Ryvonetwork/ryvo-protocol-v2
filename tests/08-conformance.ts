@@ -43,6 +43,7 @@ import {
 } from "./shared";
 
 const ONE = 1_000_000;
+const CHANNEL_BUCKET_SPACE = 32_944;
 
 describe("ryvo_protocol / step 8: conformance and solvency", () => {
   const provider = setupProvider();
@@ -466,36 +467,59 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       parties.push({ owner, participant, balances, atas });
     }
 
-    // One channel per ordered pair, per mint.
-    const channels: { key: PublicKey; from: P; mint: PublicKey }[] = [];
+    // One direct bucket slot per ordered pair, per mint.
+    const channels: {
+      key: PublicKey;
+      slot: number;
+      from: P;
+      mint: PublicKey;
+    }[] = [];
     for (const m of mints) {
       for (let i = 0; i < parties.length; i++) {
         const j = (i + 1) % parties.length;
         const from = parties[i],
           to = parties[j];
-        const key = seeds.channel(
-          program.programId,
-          from.participant,
-          to.participant,
-          m
-        );
+        const bucket = Keypair.generate();
+        const rent =
+          await provider.connection.getMinimumBalanceForRentExemption(
+            CHANNEL_BUCKET_SPACE
+          );
         await program.methods
-          .createChannel(CHANNEL_KIND_DIRECT)
+          .initializeChannelBucket(CHANNEL_KIND_DIRECT)
           .accounts({
-            payerOwner: from.owner.publicKey,
+            payeeOwner: to.owner.publicKey,
             config: configPda,
-            payerParticipant: from.participant,
             payeeParticipant: to.participant,
             mint: m,
             tokenConfig: tokenConfigs.get(m.toBase58())!,
+            payeeBalance: to.balances.get(m.toBase58())!,
+            bucket: bucket.publicKey,
+          })
+          .preInstructions([
+            SystemProgram.createAccount({
+              fromPubkey: to.owner.publicKey,
+              newAccountPubkey: bucket.publicKey,
+              lamports: rent,
+              space: CHANNEL_BUCKET_SPACE,
+              programId: program.programId,
+            }),
+          ])
+          .signers([to.owner, bucket])
+          .rpc();
+        await program.methods
+          .createChannel(0)
+          .accounts({
+            payerOwner: from.owner.publicKey,
+            payeeOwner: to.owner.publicKey,
+            payerParticipant: from.participant,
+            payeeParticipant: to.participant,
+            bucket: bucket.publicKey,
             payerBalance: from.balances.get(m.toBase58())!,
             payeeBalance: to.balances.get(m.toBase58())!,
-            channel: key,
-            systemProgram: SystemProgram.programId,
           })
-          .signers([from.owner])
+          .signers([from.owner, to.owner])
           .rpc();
-        channels.push({ key, from, mint: m });
+        channels.push({ key: bucket.publicKey, slot: 0, from, mint: m });
       }
     }
 
@@ -508,13 +532,21 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         TOKEN_PROGRAM_ID
       );
       const balances = await program.account.balance.all();
-      const chans = await program.account.channel.all();
+      const buckets = await program.account.channelBucket.all();
       const sumAvailable = balances
         .filter((b) => b.account.mint.toBase58() === key)
         .reduce((a, b) => a + BigInt(b.account.available.toString()), 0n);
-      const sumLocked = chans
-        .filter((c) => c.account.mint.toBase58() === key)
-        .reduce((a, c) => a + BigInt(c.account.lockedBalance.toString()), 0n);
+      const sumLocked = buckets
+        .filter((b) => b.account.mint.toBase58() === key)
+        .reduce(
+          (sum, b) =>
+            sum +
+            b.account.lockedBalance.reduce(
+              (bucketSum, amount) => bucketSum + BigInt(amount.toString()),
+              0n
+            ),
+          0n
+        );
       expect(
         vaultAcc.amount.toString(),
         `solvency violated for mint ${key}`
@@ -564,12 +596,12 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
               : 0;
           if (amt === 0) continue;
           await program.methods
-            .lockChannelFunds(new anchor.BN(amt * ONE))
+            .lockChannelFunds(ch.slot, new anchor.BN(amt * ONE))
             .accounts({
               payerOwner: p.owner.publicKey,
               payerParticipant: p.participant,
               config: configPda,
-              channel: ch.key,
+              bucket: ch.key,
               payerBalance: bal,
             })
             .signers([p.owner])
@@ -579,17 +611,19 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
             (c) => c.from === p && c.mint.equals(m)
           )[0];
           if (!ch) continue;
-          const c = await program.account.channel.fetch(ch.key);
-          if (Number(c.lockedBalance) === 0) continue;
+          const bucket = await program.account.channelBucket.fetch(ch.key);
+          const locked = bucket.lockedBalance[ch.slot];
+          if (Number(locked) === 0) continue;
           await program.methods
             .requestUnlockChannelFunds(
-              new anchor.BN(c.lockedBalance.toString())
+              ch.slot,
+              new anchor.BN(locked.toString())
             )
             .accounts({
               payerOwner: p.owner.publicKey,
               payerParticipant: p.participant,
               config: configPda,
-              channel: ch.key,
+              bucket: ch.key,
               payerBalance: bal,
             })
             .signers([p.owner])

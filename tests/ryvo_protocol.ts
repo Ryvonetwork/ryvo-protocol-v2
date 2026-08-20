@@ -23,7 +23,7 @@ describe("ryvo_protocol / step 0: toolchain", () => {
 
   it("loads the program at the declared address", () => {
     expect(program.programId.toBase58()).to.equal(
-      "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q",
+      "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
     );
   });
 
@@ -37,19 +37,18 @@ describe("ryvo_protocol / step 0: toolchain", () => {
       "tokenConfigSeed",
       "vaultSeed",
       "balanceSeed",
-      "channelSeed",
       "messageDomainTag",
       "commitmentDigestTag",
     ]) {
       expect(names, `IDL is missing constant ${expected}`).to.include(
-        normalize(expected),
+        normalize(expected)
       );
     }
   });
 
   it("exports stable Direct and Routed channel type values", () => {
     const constants = new Map(
-      (program.idl.constants ?? []).map((c) => [normalize(c.name), c.value]),
+      (program.idl.constants ?? []).map((c) => [normalize(c.name), c.value])
     );
     expect(constants.get(normalize("CHANNEL_KIND_DIRECT"))).to.equal("1");
     expect(constants.get(normalize("CHANNEL_KIND_ROUTED"))).to.equal("2");
@@ -59,7 +58,7 @@ describe("ryvo_protocol / step 0: toolchain", () => {
     // Every non-singleton account must carry reserved bytes so a v2 field addition never
     // forces a realloc of accounts already holding live funds.
     const accounts = program.idl.types.filter((t) =>
-      (program.idl.accounts ?? []).some((a) => a.name === t.name),
+      (program.idl.accounts ?? []).some((a) => a.name === t.name)
     );
     // Exempt: the singleton config (checked in Rust); Arcium's own signer PDA (not ours to
     // shape); and the staging buffer, which is a per-batch scratch account that is closed for
@@ -70,7 +69,9 @@ describe("ryvo_protocol / step 0: toolchain", () => {
       const fields = (t.type as any).fields ?? [];
       // Anchor's TS layer camelCases IDL names and strips the leading underscore, so compare
       // normalized.
-      const reserved = fields.find((f: any) => normalize(f.name) === "reserved");
+      const reserved = fields.find(
+        (f: any) => normalize(f.name) === "reserved"
+      );
       expect(reserved, `${t.name} has no reserved field`).to.not.be.undefined;
     }
   });

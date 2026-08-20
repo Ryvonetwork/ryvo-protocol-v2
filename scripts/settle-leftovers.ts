@@ -1,7 +1,7 @@
 /**
  * Finish every batch of ours that was verified but never (fully) settled — e.g. after a relayer
- * crash — using only what is on-chain: the staged channel addresses in the buffer, the bitmap in
- * the ClearingResult, and the payee's balance PDA derived from the channel. Then close the buffer.
+ * crash — using only what is on-chain: the staged bucket addresses in the buffer, the bitmap in
+ * the ClearingResult, and the payee's balance PDA derived from the bucket. Then close the buffer.
  * Settles in legacy transactions packed under the configured account budget.
  *
  *   ANCHOR_PROVIDER_URL=<helius devnet> ARCIUM_CLUSTER_OFFSET=456 npx ts-node -T -P tsconfig.json scripts/settle-leftovers.ts
@@ -72,7 +72,7 @@ const LEGACY_ACCOUNT_BUDGET = 30; // what fits a 1,232-byte legacy tx without a 
           todo.length
         } still to settle`
       );
-      // accounts per index from the buffer's channel columns + the channels' payee balance
+      // accounts per index from the buffer's bucket columns + the payee balance
       const N = s.kind === KIND_ROUTE ? N_ROUTE : N_UNI;
       const slots = s.slots as number[][];
       const key = (col: number, i: number) =>
@@ -116,13 +116,17 @@ const LEGACY_ACCOUNT_BUDGET = 30; // what fits a 1,232-byte legacy tx without a 
           }
           accountsFor.set(i, [source, gatewayBalance, ...providerBalances]);
         } else {
-          const ch = key(6 * N, i);
-          const c = await program.account.channel.fetch(ch);
+          const bucketKey = key(6 * N, i);
+          const bucket = await program.account.channelBucket.fetch(bucketKey);
           const bal = PublicKey.findProgramAddressSync(
-            [Buffer.from("balance"), c.payee.toBuffer(), c.mint.toBuffer()],
+            [
+              Buffer.from("balance"),
+              bucket.payee.toBuffer(),
+              bucket.mint.toBuffer(),
+            ],
             program.programId
           )[0];
-          accountsFor.set(i, [ch, bal]);
+          accountsFor.set(i, [bucketKey, bal]);
         }
       }
       // pack under the lock limit and the legacy size

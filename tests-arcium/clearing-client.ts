@@ -7,8 +7,8 @@
  * A relayer owns one reusable staging buffer: `openStaging` once, then per batch
  * `stageBatch` (which resets the buffer in the first transaction) → `sealAndQueue` →
  * `awaitClearing` → `settle`. The relayer sends dense records (`stage_records`: ids, targets,
- * signatures as raw bytes + the Channel accounts); the program lays them out in slots and copies
- * each channel's address and registered key from the account itself. A short batch stages only
+ * signatures as raw bytes + the source bucket accounts); the program lays them out in slots and
+ * copies each channel slot's registered key from the bucket. A short batch stages only
  * its real records; the program pads at seal time.
  */
 import * as anchor from "@anchor-lang/core";
@@ -74,7 +74,7 @@ export type CircuitName = (typeof CIRCUITS)[keyof typeof CIRCUITS];
 
 export interface UnilateralRecord {
   commitment: UnilateralCommitment;
-  channel: PublicKey; // the Channel account whose registered signer signed
+  sourceBucket: PublicKey;
   signature: Uint8Array; // 64
 }
 
@@ -103,7 +103,7 @@ function checkSize<T>(xs: T[], n: number) {
     throw new Error(`batch must hold 1..${n} commitments, got ${xs.length}`);
 }
 
-/** Record: channel_id u64 | target u64 | sig[64]; accounts: channel. */
+/** Record: channel_id u64 | target u64 | sig[64]; accounts: source bucket. */
 export function buildUnilateralBatch(records: UnilateralRecord[]): Batch {
   checkSize(records, N_UNI);
   return {
@@ -115,7 +115,7 @@ export function buildUnilateralBatch(records: UnilateralRecord[]): Batch {
         u64le(r.commitment.targetCumulative),
         Buffer.from(r.signature),
       ]),
-      channels: [r.channel],
+      channels: [r.sourceBucket],
     })),
   };
 }
@@ -602,7 +602,7 @@ export function bitmapBits(bitmap: number[], count: number): boolean[] {
 
 /**
  * settle_channels for a set of indices. `accountsFor(i)` returns the per-commitment accounts in
- * the order the program expects (unilateral: [channel, payeeBalance]; route:
+ * the order the program expects (unilateral: [sourceBucket, payeeBalance]; route:
  * [sourceBucket, gatewayBalance, providerBalance x allocation count]).
  */
 export async function settle(
