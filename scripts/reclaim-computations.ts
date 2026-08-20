@@ -16,7 +16,10 @@ import { claimComputationRent, getComputationAccAddress } from "@arcium-hq/clien
   const payer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(fs.readFileSync(`${os.homedir()}/.config/solana/id.json`, "utf8"))));
   const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(payer), { commitment: "confirmed" });
   const clusterOffset = Number(process.env.ARCIUM_CLUSTER_OFFSET ?? 456);
-  const programId = new PublicKey("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii");
+  const programId = new PublicKey(
+    process.env.RYVO_PROGRAM_ID ??
+      "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
+  );
   const max = Number(process.argv[2] ?? 1000);
   const sigs: string[] = [];
   let before: string | undefined;
