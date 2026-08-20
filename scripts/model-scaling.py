@@ -15,9 +15,9 @@ BASE_FEE = 5000               # lamports per signature
 LEGACY_TX_BYTES = 1232
 V1_TX_BYTES = 4096            # transaction v1 (gate not yet active on devnet)
 
-# one-provider route: compact data (153 + 16) + one source channel account.
-# The gateway Participant is shared once per staging instruction and sits in TX_OVERHEAD.
-ROUTE_WIRE = 169 + 33         # 202
+# one-provider route: compact data (153 + 16) + one repeated source-bucket account index.
+# The bucket pubkey and gateway Participant are unique once per staging transaction, not per route.
+ROUTE_WIRE = 169 + 1          # 170
 UNI_WIRE = 80 + 33            # 113
 TX_OVERHEAD = 217             # signature, header, 3 fixed accounts, blockhash, ix framing (legacy)
 def records_per_tx(wire, tx_bytes, extra=0):
@@ -27,7 +27,7 @@ def records_per_tx(wire, tx_bytes, extra=0):
 ARCIUM_FEE_LAMPORTS = 10_023
 COMPUTATION_RENT_LAMPORTS = 5_679_360       # 678-byte computation account; reclaimed in the next seal tx (net zero in steady state)
 SETTLE_CU_PER_ROUTE = 3_000                 # estimate until the new direct-credit path is measured
-SETTLE_ROUTES_PER_TX = 32                   # whole fixed route batch: 32 sources + shared balances
+SETTLE_ROUTES_PER_TX = 32                   # current route circuit returns 32 results
 SETTLE_UNI_PER_TX = 58                      # 58 channels + 1 shared payee balance + 5 (lock limit)
 STAGE_TX_CU = 10_232                        # measured: 4 routes packed on-chain per tx
 QUEUE_TX_CU = 177_007                       # prior measurement; remeasure for the new N=32 route circuit
@@ -93,13 +93,13 @@ for kind, base_settlements in (("route", 1), ("unilateral", 1)):
     configs = [
         ("first deployment: N=32, slot staging, keys staged, open/close per batch", 32, LEGACY_TX_BYTES, "first", False, 32),
         ("previous: N=64 uni / 32 route, keys copied on-chain, buffer reuse",       32 if kind == "route" else 64, LEGACY_TX_BYTES, "prev", True, 32),
-        ("NOW: N=32 route / N=64 unilateral, compact records",                      32 if kind == "route" else 64, LEGACY_TX_BYTES, "dense", True, settle_per),
+        ("NOW: routed channels share 256-slot buckets; N=32 route / N=64 direct",      32 if kind == "route" else 64, LEGACY_TX_BYTES, "dense", True, settle_per),
         ("NOW + transaction v1",                                                     32 if kind == "route" else 64, V1_TX_BYTES, "dense", True, settle_per),
-        ("NOW + v1 + 128 account locks",                                             32 if kind == "route" else 64, V1_TX_BYTES, "dense", True, 64),
+        ("NOW + v1 + 128 account locks",                                             32 if kind == "route" else 64, V1_TX_BYTES, "dense", True, settle_per),
         # hypothetical: Arcium sources inputs off-chain (no staging at all); settle carries ids+targets as data
         ("OFF-CHAIN INPUTS, legacy tx, 64 locks, N=64",                             64, LEGACY_TX_BYTES, "offchain", True, 28 if kind == "route" else 54),
         ("OFF-CHAIN INPUTS + v1 + 128 locks, N=64",                                 64, V1_TX_BYTES, "offchain", True, 64),
-        ("OFF-CHAIN INPUTS + v1 + 128 locks, N=256 (32-byte bitmap, bigger circuit)", 256, V1_TX_BYTES, "offchain", True, 103 if kind == "route" else 122),
+        ("OFF-CHAIN INPUTS + v1, N=256 (reserved bitmap + 256-slot routed bucket)",    256, V1_TX_BYTES, "offchain", True, 256 if kind == "route" else 122),
     ]
     for label, N, txb, mode, reuse, sp in configs:
         tx, cu, per_batch, batches = ryvo(N_REC, N, kind, txb, mode, reuse, sp)

@@ -7,7 +7,7 @@ pay off-chain, then settle + close. Two variants:
   unilateral:  open 1 tx, submit state 1 tx, close after challenge -> 3 tx per channel-day
 Rent of the channel account is returned on close, so it is churn, not cost.
 
-Ryvo: the agent keeps one channel to the gateway. One daily commitment contains all 3 provider
+Ryvo: the agent keeps one slot in a 256-channel gateway bucket. One daily commitment contains all 3 provider
 allocations and both signatures. There are no gateway-to-provider channels or pool. Per agent-day
 we charge 1/N of a batch plus the amortised lock top-up.
 """
@@ -40,7 +40,7 @@ rows = [
     ("Ryvo today: one 3-provider commitment, N=32 (11 tx/batch)", ryvo(32, 8, 1)),
     ("Ryvo + v1: one 3-provider commitment, N=32 (5 tx/batch)", ryvo(32, 2, 1)),
     ("Ryvo + off-chain inputs + v1, N=32 (3 tx/batch)", ryvo(32, 0, 1)),
-    ("Ryvo + off-chain inputs + v1 + 128 locks, N=256 (5 tx/batch)", ryvo(256, 0, 3)),
+    ("Ryvo + off-chain inputs + v1, N=256 bucket (3 tx/batch)", ryvo(256, 0, 1)),
 ]
 base = rows[0][1]
 print(f"Per agent-day, {PROVIDERS} providers paid. Ratio = 1:1-cooperative cost / row cost. USD at SOL ${SOL_USD:.0f}.\n")
