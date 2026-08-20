@@ -64,3 +64,16 @@ echo "==> running tests"
 export ANCHOR_PROVIDER_URL="$RPC_URL"
 export ANCHOR_WALLET="$WALLET"
 npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/**/*.ts"
+
+echo "==> finalizing program and verifying immutability"
+RYVO_CONFIRM_FINALIZE="$PROGRAM_ID" \
+RPC_URL="$RPC_URL" \
+WALLET="$WALLET" \
+PROGRAM_ID="$PROGRAM_ID" \
+  bash scripts/finalize-program.sh >/dev/null
+AUTHORITY="$(solana --url "$RPC_URL" program show "$PROGRAM_ID" | awk '/Authority/ {print $2}')"
+if [ "$AUTHORITY" != "none" ]; then
+  echo "!! program remains upgradeable with authority $AUTHORITY"
+  exit 1
+fi
+echo "    immutable: yes"

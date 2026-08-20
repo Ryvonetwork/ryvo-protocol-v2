@@ -3,6 +3,7 @@
   "scripts": {
     "build": "anchor build",
     "test": "bash scripts/test.sh",
+    "finalize:program": "bash scripts/finalize-program.sh",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
