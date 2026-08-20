@@ -114,6 +114,62 @@ pub struct ChannelFundsUnlocked {
     pub cooperative: bool,
 }
 
+#[event]
+pub struct RoutedBucketCreated {
+    pub bucket: Pubkey,
+    pub gateway: Pubkey,
+    pub mint: Pubkey,
+    pub base_channel_id: u64,
+    pub capacity: u16,
+}
+
+#[event]
+pub struct RoutedChannelCreated {
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
+    pub payer: Pubkey,
+    pub gateway: Pubkey,
+    pub mint: Pubkey,
+    pub authorized_signer: Pubkey,
+}
+
+#[event]
+pub struct RoutedChannelFundsLocked {
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
+    pub amount: u64,
+    pub locked_balance: u64,
+}
+
+#[event]
+pub struct RoutedChannelUnlockCancelled {
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
+    pub cancelled_amount: u64,
+}
+
+#[event]
+pub struct RoutedChannelUnlockRequested {
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
+    pub requested_amount: u64,
+    pub unlock_at: i64,
+}
+
+#[event]
+pub struct RoutedChannelFundsUnlocked {
+    pub bucket: Pubkey,
+    pub slot: u8,
+    pub channel_id: u64,
+    pub released_amount: u64,
+    pub remaining_locked: u64,
+    pub cooperative: bool,
+}
+
 // --- clearing ---
 
 #[event]
@@ -146,7 +202,8 @@ pub struct ChannelSettled {
 
 #[event]
 pub struct RouteSettled {
-    pub source_channel: Pubkey,
+    pub source_bucket: Pubkey,
+    pub source_slot: u8,
     pub source_channel_id: u64,
     pub base_cumulative: u64,
     pub target_cumulative: u64,
@@ -158,7 +215,8 @@ pub struct RouteSettled {
 
 #[event]
 pub struct RouteProviderPaid {
-    pub source_channel: Pubkey,
+    pub source_bucket: Pubkey,
+    pub source_slot: u8,
     pub source_channel_id: u64,
     pub provider: Pubkey,
     pub participant_id: u64,

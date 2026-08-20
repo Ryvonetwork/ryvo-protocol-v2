@@ -1,6 +1,6 @@
 use crate::constants::{
-    BALANCE_SEED, CHANNEL_KIND_DIRECT, CHANNEL_KIND_ROUTED, CHANNEL_SEED, CONFIG_SEED,
-    PARTICIPANT_SEED, TOKEN_CONFIG_SEED,
+    BALANCE_SEED, CHANNEL_KIND_DIRECT, CHANNEL_SEED, CONFIG_SEED, PARTICIPANT_SEED,
+    TOKEN_CONFIG_SEED,
 };
 use crate::error::RyvoError;
 use crate::events::{
@@ -11,7 +11,7 @@ use crate::state::{Balance, Channel, Config, Participant, TokenConfig};
 use anchor_lang::prelude::*;
 use anchor_spl::token::Mint;
 
-/// Open a one-way payment relationship. No payee involvement: opening a channel to someone costs
+/// Open a standalone direct payment relationship. No payee involvement: opening a channel to someone costs
 /// them nothing and only enables paying them.
 ///
 /// Both parties' `Balance` accounts must already exist and are passed read-only. That is a
@@ -93,10 +93,7 @@ pub fn create_channel_handler(ctx: Context<CreateChannel>, kind: u8) -> Result<(
         ctx.accounts.payer_participant.key() != ctx.accounts.payee_participant.key(),
         RyvoError::SelfChannelNotAllowed
     );
-    require!(
-        kind == CHANNEL_KIND_DIRECT || kind == CHANNEL_KIND_ROUTED,
-        RyvoError::InvalidChannelKind
-    );
+    require!(kind == CHANNEL_KIND_DIRECT, RyvoError::InvalidChannelKind);
     let config = &mut ctx.accounts.config;
     let channel_id = config.next_channel_id;
     config.next_channel_id = channel_id.checked_add(1).ok_or(RyvoError::MathOverflow)?;

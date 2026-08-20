@@ -8,7 +8,7 @@
 //! Everything about money (`min(delta, locked_balance)`, monotonicity, who gets credited) is
 //! re-derived here from the same sealed bytes the circuit read, so a compromised MPC could at
 //! worst approve an invalid signature, and even then the payment is capped by what the payer had
-//! already locked in that specific channel. A route debits one agent-to-gateway channel and
+//! already locked in that specific channel slot. A route debits one agent-to-gateway channel and
 //! directly credits every provider named in the same two-signature commitment. Any signed
 //! remainder is the gateway fee. There is no gateway pool or gateway-to-provider channel.
 //!
@@ -24,11 +24,11 @@
 //! # Staging: dense records in, slots out
 //!
 //! The relayer sends each commitment as a dense record — `stage_records(start, bytes)` with the
-//! `Channel` account(s) of each record as remaining accounts — and the *program* lays it out in
+//! direct `Channel` or routed bucket accounts as remaining accounts — and the *program* lays it out in
 //! the buffer: ids/targets/allocations as plaintext u128 slots, signatures packed 26 bytes per
 //! slot, and registered signing keys copied from program accounts. The relayer never writes a
 //! key slot directly. A route batch uses one gateway and mint, so the gateway key is copied once
-//! from its `Participant`; each agent key and channel address come from the source `Channel`.
+//! from its `Participant`; each agent key and bucket address come from the routed channel bucket.
 //!
 //! Route records are compact and variable-width: unused provider allocation slots are omitted
 //! from staging transactions, then zero-filled by the program for the fixed-size circuit input.
@@ -40,7 +40,7 @@
 //! route record:              source_id u64 | base u64 | target u64 | count u8
 //!                            | (provider_id u64 | amount u64)[count]
 //!                            | sig_agent[64] | sig_gateway[64]
-//!                            + accounts: gateway participant once, then one source channel per commitment
+//!                            + accounts: gateway participant once, then one source bucket per commitment
 //! ```
 //!
 //! The circuit reads everything from the buffer through a few account ranges (one per column).
@@ -58,7 +58,7 @@
 //! route (N commitments, 27N + 2 slots): source_base[N] | target_count[N]
 //!                                        | allocations[16N] | sig_agent[3N]
 //!                                        | sig_gateway[3N] | key_agent[2N]
-//!                                        | source_channel[N] | gateway_key[2]
+//!                                        | source_bucket[N] | gateway_key[2]
 //! ```
 //!
 //! The circuit's parameter order is `domain, message fields, keys, signatures`; the argument list is
@@ -74,13 +74,15 @@ use crate::commitment::{
     pack_pair, pack_pubkey, pack_signature, unpack_pair, RouteAllocation, RouteCommitment,
     KIND_ROUTE, KIND_UNILATERAL, MAX_ROUTE_ALLOCATIONS, PUBKEY_SLOTS as KEY_SLOTS, SIG_SLOTS, SLOT,
 };
-use crate::constants::{CHANNEL_KIND_DIRECT, CHANNEL_KIND_ROUTED, CLEARING_SEED, CONFIG_SEED};
+use crate::constants::{CHANNEL_KIND_DIRECT, CLEARING_SEED, CONFIG_SEED, MAX_CLEARING_COMMITMENTS};
 use crate::error::RyvoError;
 use crate::events::{
     BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled,
     RouteProviderPaid, RouteSettled,
 };
-use crate::state::{Balance, Channel, Config, Participant};
+use crate::state::{
+    Balance, Channel, Config, Participant, RoutedChannelBucket, ROUTED_BUCKET_VERSION,
+};
 use crate::{ArciumSignerAccount, ID, ID_CONST};
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
@@ -88,7 +90,8 @@ use arcium_client::idl::arcium::types::CallbackAccount;
 
 /// Commitments per batch. Must equal `N_UNI` / `N_ROUTE` in `encrypted-ixs`. The circuit shape
 /// is fixed at compile time, so a shorter batch is padded at seal time (record 0 repeated) and
-/// `count` tells `settle_channels` where the real ones end. 64 is the most an 8-byte bitmap holds.
+/// `count` tells `settle_channels` where the real ones end. The current circuits use 64 direct or
+/// 32 routed commitments; `ClearingResult` reserves 256 bits for the off-chain-input path.
 pub const N_UNI: usize = 64;
 pub const N_ROUTE: usize = 32;
 
@@ -122,8 +125,8 @@ pub const RT_COL_ALLOCATIONS: usize = 2 * N_ROUTE;
 pub const RT_COL_SIG_A: usize = (2 + MAX_ROUTE_ALLOCATIONS) * N_ROUTE;
 pub const RT_COL_SIG_G: usize = RT_COL_SIG_A + SIG_SLOTS * N_ROUTE;
 pub const RT_COL_KEY_A: usize = RT_COL_SIG_G + SIG_SLOTS * N_ROUTE;
-pub const RT_COL_CHANNEL_A: usize = RT_COL_KEY_A + KEY_SLOTS * N_ROUTE;
-pub const RT_GATEWAY_KEY: usize = RT_COL_CHANNEL_A + N_ROUTE;
+pub const RT_COL_SOURCE_BUCKET: usize = RT_COL_KEY_A + KEY_SLOTS * N_ROUTE;
+pub const RT_GATEWAY_KEY: usize = RT_COL_SOURCE_BUCKET + N_ROUTE;
 
 pub const fn batch_size(kind: u8) -> usize {
     if kind == KIND_ROUTE {
@@ -199,7 +202,7 @@ impl StagingBuffer {
                 (RT_COL_SIG_A, SIG_SLOTS),
                 (RT_COL_SIG_G, SIG_SLOTS),
                 (RT_COL_KEY_A, KEY_SLOTS),
-                (RT_COL_CHANNEL_A, 1),
+                (RT_COL_SOURCE_BUCKET, 1),
             ],
         }
     }
@@ -226,10 +229,10 @@ pub struct ClearingResult {
     pub verified: bool,
     pub bump: u8,
     /// Bit i set ⇒ commitment i's signature(s) verified.
-    pub bitmap: [u8; 8],
+    pub bitmap: [u8; (MAX_CLEARING_COMMITMENTS / 8) as usize],
     /// Bit i set ⇒ commitment i has been processed by `settle_channels` in this batch. Stops
     /// double-processing within the batch; monotonicity is the real replay guard.
-    pub applied: [u8; 8],
+    pub applied: [u8; (MAX_CLEARING_COMMITMENTS / 8) as usize],
     /// True if the computation itself failed (circuit fetch, abort, …). Nothing is verified;
     /// the relayer resets and re-stages. Recorded rather than erroring so the node's callback
     /// transaction lands on the first attempt instead of burning its retries.
@@ -256,8 +259,8 @@ impl ClearingResult {
         self.kind = kind;
         self.verified = false;
         self.failed = false;
-        self.bitmap = [0u8; 8];
-        self.applied = [0u8; 8];
+        self.bitmap = [0u8; (MAX_CLEARING_COMMITMENTS / 8) as usize];
+        self.applied = [0u8; (MAX_CLEARING_COMMITMENTS / 8) as usize];
         // No computation is bound until the next seal, so a late callback for an abandoned one
         // is refused rather than recorded against an unsealed buffer.
         self.computation_offset = 0;
@@ -276,10 +279,10 @@ impl ClearingResult {
     }
 }
 
-fn bit(map: &[u8; 8], i: usize) -> bool {
+fn bit(map: &[u8], i: usize) -> bool {
     map[i / 8] & (1 << (i % 8)) != 0
 }
-fn set_bit(map: &mut [u8; 8], i: usize) {
+fn set_bit(map: &mut [u8], i: usize) {
     map[i / 8] |= 1 << (i % 8);
 }
 
@@ -455,7 +458,7 @@ pub struct StageRecords<'info> {
     pub staging: AccountLoader<'info, StagingBuffer>,
     // remaining_accounts:
     //   unilateral: one source Channel per commitment
-    //   route: gateway Participant once, then one source Channel per commitment
+    //   route: gateway Participant once, then one routed bucket per commitment
 }
 
 fn u64_at(b: &[u8], o: usize) -> u64 {
@@ -605,22 +608,15 @@ pub fn stage_records_handler<'info>(
                     RT_COL_SIG_G + SIG_SLOTS * i,
                     &rec[signatures_at + 64..signatures_at + 128],
                 );
-                let source = write_channel(
+                let source = write_routed_source(
                     &mut s.slots,
                     RT_COL_KEY_A + KEY_SLOTS * i,
-                    RT_COL_CHANNEL_A + i,
+                    RT_COL_SOURCE_BUCKET + i,
                     &accs[r + 1],
+                    source_id,
                 )?;
                 require!(
-                    source.channel_id == source_id,
-                    RyvoError::StagedRecordMismatch
-                );
-                require!(
-                    source.kind == CHANNEL_KIND_ROUTED,
-                    RyvoError::InvalidChannelKind
-                );
-                require!(
-                    source.payee == gateway.key(),
+                    source.gateway == gateway.key(),
                     RyvoError::StagedRecordMismatch
                 );
                 require!(
@@ -671,6 +667,40 @@ fn write_channel<'info>(
     slots[key_at] = channel.signer_slots[0];
     slots[key_at + 1] = channel.signer_slots[1];
     Ok(channel)
+}
+
+struct RoutedSource {
+    gateway: Pubkey,
+    mint: Pubkey,
+    settled_cumulative: u64,
+}
+
+/// Bucket address + registered key for the signed routed channel id. The id selects an occupied
+/// permanent slot, so callers cannot substitute another agent's key or balance within the bucket.
+fn write_routed_source<'info>(
+    slots: &mut [[u8; SLOT]; MAX_SLOTS],
+    key_at: usize,
+    bucket_at: usize,
+    info: &'info AccountInfo<'info>,
+    channel_id: u64,
+) -> Result<RoutedSource> {
+    let loader: AccountLoader<RoutedChannelBucket> = AccountLoader::try_from(info)?;
+    let bucket = loader.load()?;
+    require!(
+        bucket.version == ROUTED_BUCKET_VERSION,
+        RyvoError::InvalidRoutedBucket
+    );
+    let slot = bucket
+        .slot_for_channel_id(channel_id)
+        .ok_or(RyvoError::StagedRecordMismatch)?;
+    slots[bucket_at] = info.key().to_bytes();
+    slots[key_at] = bucket.signer_slot_0[slot];
+    slots[key_at + 1] = bucket.signer_slot_1[slot];
+    Ok(RoutedSource {
+        gateway: bucket.gateway,
+        mint: bucket.mint,
+        settled_cumulative: bucket.settled_cumulative[slot],
+    })
 }
 
 // ============================================================================================
@@ -1137,7 +1167,7 @@ pub fn record_bitmap(result: &mut ClearingResult, bits: &[bool], kind: u8) -> Re
         RyvoError::BatchAlreadyCleared
     );
     require!(result.kind == kind, RyvoError::InvalidStagingKind);
-    let mut bitmap = [0u8; 8];
+    let mut bitmap = [0u8; (MAX_CLEARING_COMMITMENTS / 8) as usize];
     let mut set = 0u16;
     for (i, b) in bits.iter().enumerate() {
         if *b && i < result.count as usize {
@@ -1172,7 +1202,7 @@ pub struct SettleChannels<'info> {
     pub clearing_result: Box<Account<'info, ClearingResult>>,
     // remaining_accounts: per index, in order —
     //   unilateral: [channel (mut), payee_balance (mut)]
-    //   route:      [source_channel (mut), gateway_balance (mut), provider_balance (mut) x count]
+    //   route:      [source_bucket (mut), gateway_balance (mut), provider_balance (mut) x count]
 }
 
 /// Move funds for the listed commitments. Anyone may call it; a wrong or missing account simply
@@ -1319,24 +1349,25 @@ fn settle_route<'info>(
         accs.len() == 2 + allocation_count as usize,
         RyvoError::InvalidSettlementAccounts
     );
-    let staged_source = staged_pubkey(staging, RT_COL_CHANNEL_A, i);
+    let staged_bucket = staged_pubkey(staging, RT_COL_SOURCE_BUCKET, i);
 
     require!(
-        accs[0].key() == staged_source,
+        accs[0].key() == staged_bucket,
         RyvoError::SettlementChannelMismatch
     );
-    let mut source = load_mut::<Channel>(&accs[0])?;
+    require!(accs[0].is_writable, RyvoError::InvalidSettlementAccounts);
+    let bucket_loader: AccountLoader<RoutedChannelBucket> = AccountLoader::try_from(&accs[0])?;
+    let mut bucket = bucket_loader.load_mut()?;
     let mut gateway_balance = load_mut::<Balance>(&accs[1])?;
     require!(
-        source.channel_id == source_id,
-        RyvoError::SettlementChannelMismatch
+        bucket.version == ROUTED_BUCKET_VERSION,
+        RyvoError::InvalidRoutedBucket
     );
+    let slot = bucket
+        .slot_for_channel_id(source_id)
+        .ok_or(RyvoError::SettlementChannelMismatch)?;
     require!(
-        source.kind == CHANNEL_KIND_ROUTED,
-        RyvoError::InvalidChannelKind
-    );
-    require!(
-        source.payee == staging.route_gateway && source.mint == staging.route_mint,
+        bucket.gateway == staging.route_gateway && bucket.mint == staging.route_mint,
         RyvoError::SettlementRouteMismatch
     );
     require!(
@@ -1345,17 +1376,17 @@ fn settle_route<'info>(
         RyvoError::SettlementBalanceMismatch
     );
     require!(
-        source.settled_cumulative >= base,
+        bucket.settled_cumulative[slot] >= base,
         RyvoError::RouteBaseNotReached
     );
 
-    let old_cumulative = source.settled_cumulative;
-    let moved = payable(target, old_cumulative, source.locked_balance);
+    let old_cumulative = bucket.settled_cumulative[slot];
+    let moved = payable(target, old_cumulative, bucket.locked_balance[slot]);
     let new_cumulative = old_cumulative
         .checked_add(moved)
         .ok_or(RyvoError::MathOverflow)?;
-    source.locked_balance -= moved;
-    source.settled_cumulative = new_cumulative;
+    bucket.locked_balance[slot] -= moved;
+    bucket.settled_cumulative[slot] = new_cumulative;
 
     let mut provider_paid = 0u64;
     let mut range_start = base;
@@ -1394,7 +1425,8 @@ fn settle_route<'info>(
                 .ok_or(RyvoError::MathOverflow)?;
         }
         emit!(RouteProviderPaid {
-            source_channel: source.key(),
+            source_bucket: staged_bucket,
+            source_slot: slot as u8,
             source_channel_id: source_id,
             provider: provider_balance.participant,
             participant_id,
@@ -1413,11 +1445,9 @@ fn settle_route<'info>(
             .ok_or(RyvoError::MathOverflow)?;
         gateway_balance.exit(&crate::ID)?;
     }
-    if moved > 0 {
-        source.exit(&crate::ID)?;
-    }
     emit!(RouteSettled {
-        source_channel: source.key(),
+        source_bucket: staged_bucket,
+        source_slot: slot as u8,
         source_channel_id: source_id,
         base_cumulative: base,
         target_cumulative: target,
@@ -1464,4 +1494,26 @@ pub fn close_staging_handler(ctx: Context<CloseStaging>) -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use anchor_lang::Space;
+
+    #[test]
+    fn clearing_account_sizes_are_pinned() {
+        assert_eq!(core::mem::size_of::<StagingBuffer>(), 27_832);
+        assert_eq!(StagingBuffer::SPACE, 27_840);
+        assert_eq!(ClearingResult::INIT_SPACE, 133);
+    }
+
+    #[test]
+    fn clearing_result_reserves_256_commitment_bits() {
+        assert_eq!(MAX_CLEARING_COMMITMENTS, 256);
+        let mut bitmap = [0u8; (MAX_CLEARING_COMMITMENTS / 8) as usize];
+        set_bit(&mut bitmap, 255);
+        assert!(bit(&bitmap, 255));
+        assert!(!bit(&bitmap, 254));
+    }
 }

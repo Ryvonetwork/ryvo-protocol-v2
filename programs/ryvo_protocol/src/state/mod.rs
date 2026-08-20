@@ -2,12 +2,14 @@ pub mod balance;
 pub mod channel;
 pub mod config;
 pub mod participant;
+pub mod routed_channel_bucket;
 pub mod token_config;
 
 pub use balance::*;
 pub use channel::*;
 pub use config::*;
 pub use participant::*;
+pub use routed_channel_bucket::*;
 pub use token_config::*;
 
 #[cfg(test)]
@@ -31,6 +33,7 @@ mod tests {
             Channel::INIT_SPACE,
             32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 64 + 1 + 1 + 87
         );
+        assert_eq!(RoutedChannelBucket::SPACE, 32_944);
     }
 
     /// Every non-singleton account keeps meaningful reserved space. Participant used 40 bytes
