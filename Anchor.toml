@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-ryvo_protocol = "DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii"
+ryvo_protocol = "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
 
 [programs.devnet]
-ryvo_protocol = "DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii"
+ryvo_protocol = "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
 
 [provider]
 cluster = "localnet"
@@ -29,6 +29,6 @@ startup_wait = 10000
 # genesis-loaded program has an unusable authority and `initialize` — gated on the upgrade
 # authority so the fixed-seed Config cannot be front-run — is uncallable under `arcium test`.
 [[test.genesis]]
-address = "DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii"
+address = "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
 program = "target/deploy/ryvo_protocol.so"
 upgradeable = true

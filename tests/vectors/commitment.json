@@ -1,6 +1,6 @@
 {
   "_comment": "Golden vectors shared by the Rust program and the TypeScript client. Both assert against this file, so a field added on one side without the other fails a test immediately rather than silently producing signatures nothing can verify. Digest is SHA3-256(digestTag || canonical). Regenerate only when deliberately bumping the format version.",
-  "programId": "DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii",
+  "programId": "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q",
   "version": 1,
   "kinds": {
     "unilateral": 1,
@@ -14,19 +14,19 @@
   "messageDomains": [
     {
       "chainId": 0,
-      "domain": "97b3122481121d96e2158a5da943a80a"
+      "domain": "5ff81e93bfc5175dbd76d33921fe3fec"
     },
     {
       "chainId": 1,
-      "domain": "6e7a83daf600a277e0703f39dd6b0b47"
+      "domain": "f1d306e12e54ad4762ad363ef481cddb"
     },
     {
       "chainId": 2,
-      "domain": "e6c060340a805c8b8a94661bceb23409"
+      "domain": "94dcb0d27d52fec356d908a0752d3a18"
     },
     {
       "chainId": 3,
-      "domain": "e1086bdb665b90fc3e267ee196158a0e"
+      "domain": "dd42adb878834422a8bf8d42d0f2daee"
     }
   ],
   "commitments": [

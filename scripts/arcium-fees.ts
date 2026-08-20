@@ -10,7 +10,7 @@ import { getArciumProgram, getClusterAccAddress, getCompDefAccAddress, getCompDe
   const payer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(fs.readFileSync(`${os.homedir()}/.config/solana/id.json`, "utf8"))));
   const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(payer), { commitment: "confirmed" });
   const arcium = getArciumProgram(provider as any);
-  const programId = new PublicKey("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii");
+  const programId = new PublicKey("9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q");
   const offset = Number(process.env.ARCIUM_CLUSTER_OFFSET ?? 456);
   const cluster: any = await (arcium.account as any).cluster.fetch(getClusterAccAddress(offset));
   const show = (o: any) => JSON.stringify(o, (_, v) => (v && v.toNumber ? v.toString() : v instanceof Uint8Array || Array.isArray(v) && v.length > 8 ? `[${v.length} items]` : v), 1).slice(0, 4000);

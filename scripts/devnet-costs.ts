@@ -9,7 +9,7 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import * as fs from "fs";
 import * as os from "os";
 
-const PROGRAM_ID = new PublicKey("DD7m7B1FggiCQCURQ2pNXyDtPZPRdJYYgq9dthtaJtii");
+const PROGRAM_ID = new PublicKey("9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q");
 const CLEARING = ["ResetStaging", "StageRecords", "StageSlots", "StageChannels", "SealAndQueueRoute", "SealAndQueueUnilateral", "SettleChannels", "OpenStaging", "CloseStaging"];
 
 (async () => {
