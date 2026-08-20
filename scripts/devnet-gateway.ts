@@ -50,7 +50,6 @@ import {
   deriveMessageDomain,
   signCommitment,
 } from "../tests/commitment-client";
-import { CHANNEL_KIND_ROUTED } from "../tests/shared";
 import {
   N_ROUTE,
   RouteRecord,
@@ -197,6 +196,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   }
   interface Chan {
     key: PublicKey;
+    slot: number;
     id: bigint;
     payer: Party;
     payee: Party;
@@ -208,6 +208,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   let agents: Party[] = [];
   let gateway: Party;
   let providers: Party[] = [];
+  let routedBucket: PublicKey;
+  let routedBucketBaseId = 0n;
   const chanAG: Chan[] = [];
   const records: RouteRecord[] = [];
   const routeOf: {
@@ -345,7 +347,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     const all = [...agents, gateway, ...providers];
 
     // Fund SOL from the wallet (the faucet is rate limited): 8 transfers per tx.
-    const lamports = (p: Party) => (p === gateway ? 0.12 : 0.03) * 1e9;
+    const lamports = (p: Party) => (p === gateway ? 0.5 : 0.03) * 1e9;
     for (let i = 0; i < all.length; i += 8) {
       const tx = new anchor.web3.Transaction();
       for (const p of all.slice(i, i + 8))
@@ -404,48 +406,80 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       p.participantId = BigInt(account.participantId.toString());
     });
 
-    // Only agent -> gateway source channels are needed. Providers receive Balance credits
-    // directly from the signed route commitment.
-    const openChannel = async (from: Party, to: Party): Promise<Chan> => {
-      const key = pda.channel(from.participant, to.participant, mint);
+    const bucketKeypair = Keypair.generate();
+    const bucketSpace = 32_944;
+    const bucketRent = await connection.getMinimumBalanceForRentExemption(
+      bucketSpace
+    );
+    await program.methods
+      .initializeRoutedBucket()
+      .accounts({
+        gatewayOwner: gateway.owner.publicKey,
+        config: pda.config,
+        gatewayParticipant: gateway.participant,
+        mint,
+        tokenConfig,
+        gatewayBalance: gateway.balance,
+        bucket: bucketKeypair.publicKey,
+      })
+      .preInstructions([
+        SystemProgram.createAccount({
+          fromPubkey: gateway.owner.publicKey,
+          newAccountPubkey: bucketKeypair.publicKey,
+          lamports: bucketRent,
+          space: bucketSpace,
+          programId,
+        }),
+      ])
+      .signers([gateway.owner, bucketKeypair])
+      .rpc({ commitment: "confirmed" });
+    stats.tx.setup++;
+    routedBucket = bucketKeypair.publicKey;
+    const bucketState = await program.account.routedChannelBucket.fetch(
+      routedBucket
+    );
+    routedBucketBaseId = BigInt(bucketState.baseChannelId.toString());
+
+    // All agent -> gateway source channels occupy permanent slots in one shared bucket.
+    const openChannel = async (from: Party, slot: number): Promise<Chan> => {
       const tx = new anchor.web3.Transaction().add(
         await program.methods
-          .createChannel(CHANNEL_KIND_ROUTED)
+          .createRoutedChannel(slot)
           .accounts({
             payerOwner: from.owner.publicKey,
-            config: pda.config,
+            gatewayOwner: gateway.owner.publicKey,
             payerParticipant: from.participant,
-            payeeParticipant: to.participant,
-            mint,
-            tokenConfig,
+            gatewayParticipant: gateway.participant,
+            bucket: routedBucket,
             payerBalance: from.balance,
-            payeeBalance: to.balance,
-            channel: key,
-            systemProgram: SystemProgram.programId,
+            gatewayBalance: gateway.balance,
           })
           .instruction()
       );
       tx.feePayer = from.owner.publicKey;
       await retry(
         () =>
-          sendAndConfirmTransaction(connection, tx, [from.owner], {
-            commitment: "confirmed",
-          }),
+          sendAndConfirmTransaction(
+            connection,
+            tx,
+            [from.owner, gateway.owner],
+            {
+              commitment: "confirmed",
+            }
+          ),
         5,
         "channel"
       );
       stats.tx.setup++;
-      const c = await program.account.channel.fetch(key);
       return {
-        key,
-        id: BigInt(c.channelId.toString()),
+        key: routedBucket,
+        slot,
+        id: routedBucketBaseId + BigInt(slot),
         payer: from,
-        payee: to,
+        payee: gateway,
       };
     };
-    // Config is write-locked by create_channel, so these serialize on-chain anyway; keep
-    // concurrency modest to avoid preflight races on the id counter.
-    const ag = await pmap(agents, (a) => openChannel(a, gateway), 3);
+    const ag = await pmap(agents, (a, i) => openChannel(a, i), 3);
     chanAG.push(...ag);
 
     // Fund + deposit + lock per agent: ATA, mintTo (wallet is mint authority), deposit, lock.
@@ -486,12 +520,12 @@ describe("ryvo_protocol devnet gateway smoke", function () {
           })
           .instruction(),
         await program.methods
-          .lockChannelFunds(new anchor.BN(AGENT_LOCK))
+          .lockRoutedChannelFunds(chanAG[i].slot, new anchor.BN(AGENT_LOCK))
           .accounts({
             payerOwner: a.owner.publicKey,
             payerParticipant: a.participant,
             config: pda.config,
-            channel: chanAG[i].key,
+            bucket: chanAG[i].key,
             payerBalance: a.balance,
           })
           .instruction()
@@ -538,7 +572,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const g = signCommitment(gateway.seed, c);
       records.push({
         commitment: c,
-        sourceChannel: chanAG[i].key,
+        sourceBucket: chanAG[i].key,
         agentSignature: a.signature,
         gatewaySignature: g.signature,
       });
@@ -615,7 +649,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   });
 
   /** Settle through the lookup table in v0 transactions. Each one-provider commitment supplies
-   *  its source channel, the shared gateway balance and one provider balance. */
+   *  its source bucket, the shared gateway balance and one provider balance. */
   const MAX_TX_ACCOUNTS = 64;
   const SETTLE_PER_TX = Number(process.env.RYVO_SETTLE_PER_TX ?? 64);
   let table:
@@ -624,7 +658,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
   async function ensureLookupTable() {
     if (table) return table;
     const addresses = [
-      ...chanAG.map((c) => c.key),
+      routedBucket,
       gateway.balance,
       ...providers.map((p) => p.balance),
     ];
@@ -760,12 +794,15 @@ describe("ryvo_protocol devnet gateway smoke", function () {
         expProvider[j]
       );
     }
+    const bucket = await program.account.routedChannelBucket.fetch(
+      routedBucket
+    );
     for (let i = 0; i < AGENTS; i++) {
-      const c = await program.account.channel.fetch(chanAG[i].key);
-      expect(c.settledCumulative.toNumber(), `agent ${i}`).to.equal(
-        routeOf[i].target
-      );
-      expect(c.lockedBalance.toNumber()).to.equal(
+      expect(
+        bucket.settledCumulative[chanAG[i].slot].toNumber(),
+        `agent ${i}`
+      ).to.equal(routeOf[i].target);
+      expect(bucket.lockedBalance[chanAG[i].slot].toNumber()).to.equal(
         AGENT_LOCK - routeOf[i].target
       );
     }
@@ -783,15 +820,12 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     const balances = await program.account.balance.all([
       { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } },
     ]);
-    const channels = await program.account.channel.all([
-      { memcmp: { offset: 8 + 64, bytes: mint.toBase58() } },
-    ]);
     const sumAvail = balances.reduce(
       (a, b) => a + BigInt(b.account.available.toString()),
       0n
     );
-    const sumLocked = channels.reduce(
-      (a, c) => a + BigInt(c.account.lockedBalance.toString()),
+    const sumLocked = bucket.lockedBalance.reduce(
+      (a, amount) => a + BigInt(amount.toString()),
       0n
     );
     expect(vaultAcc.amount.toString()).to.equal(

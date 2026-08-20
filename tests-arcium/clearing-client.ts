@@ -80,12 +80,12 @@ export interface UnilateralRecord {
 
 export interface RouteRecord {
   commitment: RouteCommitment;
-  sourceChannel: PublicKey;
+  sourceBucket: PublicKey;
   agentSignature: Uint8Array;
   gatewaySignature: Uint8Array;
 }
 
-/** A batch ready to stage: one dense record + its channel account(s) per commitment, no padding. */
+/** A batch ready to stage: one dense record + its source account per commitment, no padding. */
 export interface Batch {
   kind: number;
   sharedAccounts: PublicKey[];
@@ -142,7 +142,7 @@ export function buildRouteBatch(
         Buffer.from(r.agentSignature),
         Buffer.from(r.gatewaySignature),
       ]),
-      channels: [r.sourceChannel],
+      channels: [r.sourceBucket],
     })),
   };
 }
@@ -603,7 +603,7 @@ export function bitmapBits(bitmap: number[], count: number): boolean[] {
 /**
  * settle_channels for a set of indices. `accountsFor(i)` returns the per-commitment accounts in
  * the order the program expects (unilateral: [channel, payeeBalance]; route:
- * [sourceChannel, gatewayBalance, providerBalance x allocation count]).
+ * [sourceBucket, gatewayBalance, providerBalance x allocation count]).
  */
 export async function settle(
   program: Program<RyvoProtocol>,

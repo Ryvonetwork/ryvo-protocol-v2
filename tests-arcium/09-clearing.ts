@@ -52,6 +52,7 @@ import {
 } from "./clearing-client";
 
 const ONE = 1_000_000;
+const ROUTED_BUCKET_SPACE = 32_944;
 
 describe("ryvo_protocol / step 9: Arcium clearing", () => {
   const provider = setupProvider();
@@ -76,6 +77,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
 
   interface Chan {
     key: PublicKey;
+    slot?: number;
     id: bigint;
     payer: Party;
     payee: Party;
@@ -90,6 +92,10 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   let staging: PublicKey;
   let firstBatch = true;
   let lastComputation: anchor.BN | undefined;
+  const routedBuckets = new Map<
+    string,
+    { key: PublicKey; nextSlot: number; baseId: bigint }
+  >();
 
   async function makeParty(
     deposit = 0,
@@ -174,8 +180,74 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   async function openChannel(
     from: Party,
     to: Party,
-    kind: number,
+    kind: number
   ): Promise<Chan> {
+    if (kind === CHANNEL_KIND_ROUTED) {
+      const bucketKey = to.participant.toBase58();
+      let routedBucket = routedBuckets.get(bucketKey);
+      if (!routedBucket) {
+        const bucket = Keypair.generate();
+        const rent =
+          await provider.connection.getMinimumBalanceForRentExemption(
+            ROUTED_BUCKET_SPACE
+          );
+        await program.methods
+          .initializeRoutedBucket()
+          .accounts({
+            gatewayOwner: to.owner.publicKey,
+            config: configPda,
+            gatewayParticipant: to.participant,
+            mint,
+            tokenConfig,
+            gatewayBalance: to.balance,
+            bucket: bucket.publicKey,
+          })
+          .preInstructions([
+            SystemProgram.createAccount({
+              fromPubkey: to.owner.publicKey,
+              newAccountPubkey: bucket.publicKey,
+              lamports: rent,
+              space: ROUTED_BUCKET_SPACE,
+              programId: program.programId,
+            }),
+          ])
+          .signers([to.owner, bucket])
+          .rpc();
+        const state = await program.account.routedChannelBucket.fetch(
+          bucket.publicKey
+        );
+        routedBucket = {
+          key: bucket.publicKey,
+          nextSlot: 0,
+          baseId: BigInt(state.baseChannelId.toString()),
+        };
+        routedBuckets.set(bucketKey, routedBucket);
+      }
+      if (routedBucket.nextSlot >= 256)
+        throw new Error("routed bucket is full");
+      const slot = routedBucket.nextSlot++;
+      await program.methods
+        .createRoutedChannel(slot)
+        .accounts({
+          payerOwner: from.owner.publicKey,
+          gatewayOwner: to.owner.publicKey,
+          payerParticipant: from.participant,
+          gatewayParticipant: to.participant,
+          bucket: routedBucket.key,
+          payerBalance: from.balance,
+          gatewayBalance: to.balance,
+        })
+        .signers([from.owner, to.owner])
+        .rpc();
+      return {
+        key: routedBucket.key,
+        slot,
+        id: routedBucket.baseId + BigInt(slot),
+        payer: from,
+        payee: to,
+      };
+    }
+
     const key = seeds.channel(
       program.programId,
       from.participant,
@@ -209,6 +281,20 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   }
 
   async function lock(channel: Chan, amount: number) {
+    if (channel.slot !== undefined) {
+      await program.methods
+        .lockRoutedChannelFunds(channel.slot, new anchor.BN(amount))
+        .accounts({
+          payerOwner: channel.payer.owner.publicKey,
+          payerParticipant: channel.payer.participant,
+          config: configPda,
+          bucket: channel.key,
+          payerBalance: channel.payer.balance,
+        })
+        .signers([channel.payer.owner])
+        .rpc();
+      return;
+    }
     await program.methods
       .lockChannelFunds(new anchor.BN(amount))
       .accounts({
@@ -273,13 +359,22 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     if (corruptGateway) gatewaySignature[10] ^= 1;
     return {
       commitment,
-      sourceChannel: source.key,
+      sourceBucket: source.key,
       agentSignature: agent.signature,
       gatewaySignature,
     };
   };
 
   async function channelState(channel: Chan) {
+    if (channel.slot !== undefined) {
+      const state = await program.account.routedChannelBucket.fetch(
+        channel.key
+      );
+      return {
+        settled: state.settledCumulative[channel.slot].toNumber(),
+        locked: state.lockedBalance[channel.slot].toNumber(),
+      };
+    }
     const state = await program.account.channel.fetch(channel.key);
     return {
       settled: state.settledCumulative.toNumber(),
@@ -302,14 +397,26 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     );
     const balances = await program.account.balance.all();
     const channels = await program.account.channel.all();
+    const buckets = await program.account.routedChannelBucket.all();
     const sumAvailable = balances
       .filter((b) => b.account.mint.equals(mint))
       .reduce((sum, b) => sum + BigInt(b.account.available.toString()), 0n);
     const sumLocked = channels
       .filter((c) => c.account.mint.equals(mint))
       .reduce((sum, c) => sum + BigInt(c.account.lockedBalance.toString()), 0n);
+    const sumBucketLocked = buckets
+      .filter((b) => b.account.mint.equals(mint))
+      .reduce(
+        (sum, b) =>
+          sum +
+          b.account.lockedBalance.reduce(
+            (bucketSum, amount) => bucketSum + BigInt(amount.toString()),
+            0n
+          ),
+        0n
+      );
     expect(vaultAccount.amount.toString()).to.equal(
-      (sumAvailable + sumLocked).toString(),
+      (sumAvailable + sumLocked + sumBucketLocked).toString(),
       "solvency invariant violated"
     );
   }
@@ -394,6 +501,54 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await assertSolvent();
   });
 
+  it("stores routed channels in permanent bucket slots", async () => {
+    const state = await program.account.routedChannelBucket.fetch(routedAG.key);
+    expect(routedAG.id).to.equal(
+      BigInt(state.baseChannelId.toString()) + BigInt(routedAG.slot!)
+    );
+    expect(state.payers[routedAG.slot!].toBase58()).to.equal(
+      routedAgent.participant.toBase58()
+    );
+    expect(
+      state.occupied[Math.floor(routedAG.slot! / 8)] & (1 << routedAG.slot! % 8)
+    ).to.not.equal(0);
+    const config = await program.account.config.fetch(configPda);
+    expect(config.nextChannelId.toString()).to.equal(
+      (BigInt(state.baseChannelId.toString()) + 256n).toString()
+    );
+
+    await expectReject(
+      program.methods
+        .createRoutedChannel(routedAG.slot!)
+        .accounts({
+          payerOwner: routedAgent.owner.publicKey,
+          gatewayOwner: gateway.owner.publicKey,
+          payerParticipant: routedAgent.participant,
+          gatewayParticipant: gateway.participant,
+          bucket: routedAG.key,
+          payerBalance: routedAgent.balance,
+          gatewayBalance: gateway.balance,
+        })
+        .signers([routedAgent.owner, gateway.owner])
+        .rpc(),
+      /RoutedSlotOccupied/
+    );
+    await expectReject(
+      program.methods
+        .lockRoutedChannelFunds(routedAG.slot!, new anchor.BN(ONE))
+        .accounts({
+          payerOwner: directAgents[0].owner.publicKey,
+          payerParticipant: directAgents[0].participant,
+          config: configPda,
+          bucket: routedAG.key,
+          payerBalance: directAgents[0].balance,
+        })
+        .signers([directAgents[0].owner])
+        .rpc(),
+      /InvalidRoutedSlot/
+    );
+  });
+
   it("returns false for a malformed key or signature without failing the batch", async () => {
     const weird = await makeParty(
       10 * ONE,
@@ -435,9 +590,9 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       tryBatch(
         KIND_UNILATERAL,
         buildUnilateralBatch([uniRecord(routedAG, ONE)]),
-        false,
+        false
       ),
-      /InvalidChannelKind/,
+      /AccountDiscriminatorMismatch|AccountDiscriminatorNotFound|InvalidAccountData/
     );
     await expectReject(
       tryBatch(
@@ -448,11 +603,11 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
               { provider: providers[0], amount: ONE },
             ]),
           ],
-          gateway.participant,
+          gateway.participant
         ),
-        false,
+        false
       ),
-      /InvalidChannelKind/,
+      /AccountDiscriminatorMismatch|AccountDiscriminatorNotFound|InvalidAccountData/
     );
     expect(await channelState(routedAG)).to.deep.equal({
       settled: 0,
@@ -525,12 +680,12 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       { provider: providers[1], amount: 2 * ONE },
     ]);
     await program.methods
-      .requestUnlockChannelFunds(new anchor.BN(20 * ONE))
+      .requestUnlockRoutedChannelFunds(routedAG.slot!, new anchor.BN(20 * ONE))
       .accounts({
         payerOwner: routedAgent.owner.publicKey,
         payerParticipant: routedAgent.participant,
         config: configPda,
-        channel: routedAG.key,
+        bucket: routedAG.key,
         payerBalance: routedAgent.balance,
       })
       .signers([routedAgent.owner])
@@ -608,6 +763,84 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     });
     expect(await available(providers[1])).to.equal(p1 + 8 * ONE);
     expect(await available(gateway)).to.equal(g + 2 * ONE);
+    await assertSolvent();
+  });
+
+  it("does not block the bucket when an unlock leaves a valid commitment unfunded", async () => {
+    const agent = await makeParty(12 * ONE);
+    const source = await openChannel(agent, gateway, CHANNEL_KIND_ROUTED);
+    await lock(source, 10 * ONE);
+    const record = routeRecord(source, 0, 11 * ONE, [
+      { provider: providers[0], amount: 11 * ONE },
+    ]);
+    await program.methods
+      .requestUnlockRoutedChannelFunds(source.slot!, new anchor.BN(10 * ONE))
+      .accounts({
+        payerOwner: agent.owner.publicKey,
+        payerParticipant: agent.participant,
+        config: configPda,
+        bucket: source.key,
+        payerBalance: agent.balance,
+      })
+      .signers([agent.owner])
+      .rpc();
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await program.methods
+      .executeUnlockRoutedChannelFunds(source.slot!)
+      .accounts({
+        payerOwner: agent.owner.publicKey,
+        payerParticipant: agent.participant,
+        config: configPda,
+        bucket: source.key,
+        payerBalance: agent.balance,
+      })
+      .signers([agent.owner])
+      .rpc();
+
+    await clear(KIND_ROUTE, buildRouteBatch([record], gateway.participant), 1);
+    await settle(program, staging, [0], () => [
+      source.key,
+      gateway.balance,
+      providers[0].balance,
+    ]);
+    expect(await channelState(source)).to.deep.equal({ settled: 0, locked: 0 });
+
+    const providerBefore = await available(providers[0]);
+    await lock(source, 10 * ONE);
+    await clear(KIND_ROUTE, buildRouteBatch([record], gateway.participant), 1);
+    await settle(program, staging, [0], () => [
+      source.key,
+      gateway.balance,
+      providers[0].balance,
+    ]);
+    expect(await channelState(source)).to.deep.equal({
+      settled: 10 * ONE,
+      locked: 0,
+    });
+    expect(await available(providers[0])).to.equal(providerBefore + 10 * ONE);
+    await assertSolvent();
+  });
+
+  it("cooperatively unlocks a routed bucket slot with both signatures", async () => {
+    const agent = await makeParty(5 * ONE);
+    const source = await openChannel(agent, gateway, CHANNEL_KIND_ROUTED);
+    await lock(source, 5 * ONE);
+    await program.methods
+      .cooperativeUnlockRoutedChannelFunds(source.slot!, new anchor.BN(3 * ONE))
+      .accounts({
+        payerOwner: agent.owner.publicKey,
+        gatewayOwner: gateway.owner.publicKey,
+        payerParticipant: agent.participant,
+        gatewayParticipant: gateway.participant,
+        bucket: source.key,
+        payerBalance: agent.balance,
+      })
+      .signers([agent.owner, gateway.owner])
+      .rpc();
+    expect(await channelState(source)).to.deep.equal({
+      settled: 0,
+      locked: 2 * ONE,
+    });
     await assertSolvent();
   });
 
@@ -690,7 +923,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const wrongGatewaySource = await openChannel(
       agent,
       otherGateway,
-      CHANNEL_KIND_ROUTED,
+      CHANNEL_KIND_ROUTED
     );
     await lock(wrongGatewaySource, 5 * ONE);
     const mixed = routeRecord(
@@ -715,18 +948,18 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   it("executes an unlock for only what settlement left", async () => {
     expect(
       (
-        await program.account.channel.fetch(routedAG.key)
-      ).pendingUnlockAmount.toNumber()
+        await program.account.routedChannelBucket.fetch(routedAG.key)
+      ).pendingUnlockAmount[routedAG.slot!].toNumber()
     ).to.equal(20 * ONE);
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const before = await available(routedAgent);
     await program.methods
-      .executeUnlockChannelFunds()
+      .executeUnlockRoutedChannelFunds(routedAG.slot!)
       .accounts({
         payerOwner: routedAgent.owner.publicKey,
         payerParticipant: routedAgent.participant,
         config: configPda,
-        channel: routedAG.key,
+        bucket: routedAG.key,
         payerBalance: routedAgent.balance,
       })
       .signers([routedAgent.owner])
