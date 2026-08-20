@@ -74,7 +74,7 @@ use crate::commitment::{
     pack_pair, pack_pubkey, pack_signature, unpack_pair, RouteAllocation, RouteCommitment,
     KIND_ROUTE, KIND_UNILATERAL, MAX_ROUTE_ALLOCATIONS, PUBKEY_SLOTS as KEY_SLOTS, SIG_SLOTS, SLOT,
 };
-use crate::constants::{CLEARING_SEED, CONFIG_SEED};
+use crate::constants::{CHANNEL_KIND_DIRECT, CHANNEL_KIND_ROUTED, CLEARING_SEED, CONFIG_SEED};
 use crate::error::RyvoError;
 use crate::events::{
     BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled,
@@ -503,6 +503,10 @@ pub fn stage_records_handler<'info>(
                 )?;
                 require!(ch.channel_id == channel_id, RyvoError::StagedRecordMismatch);
                 require!(
+                    ch.kind == CHANNEL_KIND_DIRECT,
+                    RyvoError::InvalidChannelKind
+                );
+                require!(
                     u64_at(rec, 8) > ch.settled_cumulative,
                     RyvoError::CommitmentAlreadySettled
                 );
@@ -610,6 +614,10 @@ pub fn stage_records_handler<'info>(
                 require!(
                     source.channel_id == source_id,
                     RyvoError::StagedRecordMismatch
+                );
+                require!(
+                    source.kind == CHANNEL_KIND_ROUTED,
+                    RyvoError::InvalidChannelKind
                 );
                 require!(
                     source.payee == gateway.key(),
@@ -1266,6 +1274,10 @@ fn settle_unilateral<'info>(
         RyvoError::SettlementChannelMismatch
     );
     require!(
+        channel.kind == CHANNEL_KIND_DIRECT,
+        RyvoError::InvalidChannelKind
+    );
+    require!(
         payee_balance.participant == channel.payee && payee_balance.mint == channel.mint,
         RyvoError::SettlementBalanceMismatch
     );
@@ -1318,6 +1330,10 @@ fn settle_route<'info>(
     require!(
         source.channel_id == source_id,
         RyvoError::SettlementChannelMismatch
+    );
+    require!(
+        source.kind == CHANNEL_KIND_ROUTED,
+        RyvoError::InvalidChannelKind
     );
     require!(
         source.payee == staging.route_gateway && source.mint == staging.route_mint,

@@ -12,6 +12,7 @@ import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import { expect } from "chai";
 import { deriveArcisSigner } from "./commitment-client";
 import {
+  CHANNEL_KIND_DIRECT,
   CHANNEL_TIMELOCK,
   ensureConfig,
   expectReject,
@@ -118,9 +119,9 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     return { owner, participant, balance, signer };
   }
 
-  const createChannel = (from: Party, to: Party) =>
+  const createChannel = (from: Party, to: Party, kind = CHANNEL_KIND_DIRECT) =>
     program.methods
-      .createChannel()
+      .createChannel(kind)
       .accounts({
         payerOwner: from.owner.publicKey,
         config: configPda,
@@ -228,10 +229,18 @@ describe("ryvo_protocol / step 7: channels, lock, unlock", () => {
     expect(c.authorizedSigner.toBase58()).to.equal(payer.signer.toBase58());
     expect(c.settledCumulative.toNumber()).to.equal(0);
     expect(c.lockedBalance.toNumber()).to.equal(0);
+    expect(c.kind).to.equal(CHANNEL_KIND_DIRECT);
 
     // And the registered signer is NOT the agent's wallet address.
     expect(c.authorizedSigner.toBase58()).to.not.equal(
       payer.owner.publicKey.toBase58()
+    );
+  });
+
+  it("rejects an unknown channel type", async () => {
+    await expectReject(
+      createChannel(payee, payer, 0).rpc(),
+      /InvalidChannelKind/,
     );
   });
 

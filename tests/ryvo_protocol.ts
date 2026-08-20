@@ -47,6 +47,14 @@ describe("ryvo_protocol / step 0: toolchain", () => {
     }
   });
 
+  it("exports stable Direct and Routed channel type values", () => {
+    const constants = new Map(
+      (program.idl.constants ?? []).map((c) => [normalize(c.name), c.value]),
+    );
+    expect(constants.get(normalize("CHANNEL_KIND_DIRECT"))).to.equal("1");
+    expect(constants.get(normalize("CHANNEL_KIND_ROUTED"))).to.equal("2");
+  });
+
   it("declares no account type without reserved growth room", () => {
     // Every non-singleton account must carry reserved bytes so a v2 field addition never
     // forces a realloc of accounts already holding live funds.

@@ -25,6 +25,14 @@ pub const CHANNEL_SEED: &str = "channel";
 #[constant]
 pub const CLEARING_SEED: &str = "clearing";
 
+// Immutable channel types. A channel accepts exactly one commitment format for its lifetime.
+
+#[constant]
+pub const CHANNEL_KIND_DIRECT: u8 = 1;
+
+#[constant]
+pub const CHANNEL_KIND_ROUTED: u8 = 2;
+
 // Domain-separation tags.
 
 /// Preimage tag for the deployment-scoped message domain:

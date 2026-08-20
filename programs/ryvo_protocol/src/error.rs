@@ -39,6 +39,8 @@ pub enum RyvoError {
     SelfChannelNotAllowed,
     #[msg("Authorized signer is invalid")]
     InvalidAuthorizedSigner,
+    #[msg("Channel does not allow this commitment type")]
+    InvalidChannelKind,
     #[msg("Insufficient locked balance on this channel")]
     InsufficientLockedBalance,
     #[msg("No channel unlock is pending")]

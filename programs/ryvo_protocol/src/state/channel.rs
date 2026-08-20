@@ -12,6 +12,10 @@ use anchor_lang::prelude::*;
 /// eight bytes instead of thirty-two keeps a staged record small enough to clear in bulk. The
 /// binding is transitive — `settle_channels` requires `staged_id == channel.channel_id` on the
 /// account it is handed — and safe because ids are never reused.
+///
+/// `kind` is immutable. A direct channel accepts only an agent-signed direct commitment. A routed
+/// channel accepts only a route commitment signed by both the agent and gateway. This prevents an
+/// agent-only direct commitment from advancing the same cumulative counter before providers are paid.
 #[account]
 #[derive(InitSpace)]
 pub struct Channel {
@@ -54,7 +58,10 @@ pub struct Channel {
     /// circuit reads, so the relayer never stages keys and cannot substitute one.
     pub signer_slots: [[u8; 32]; 2],
     pub bump: u8,
-    pub _reserved: [u8; 88],
+    /// Immutable commitment type: `CHANNEL_KIND_DIRECT` or `CHANNEL_KIND_ROUTED`.
+    /// Kept after `signer_slots` so their circuit-facing byte offset remains unchanged.
+    pub kind: u8,
+    pub _reserved: [u8; 87],
 }
 
 impl Channel {

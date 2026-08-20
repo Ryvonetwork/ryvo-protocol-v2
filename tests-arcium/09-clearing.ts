@@ -12,6 +12,8 @@ import { expect } from "chai";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import {
   CHAIN_ID,
+  CHANNEL_KIND_DIRECT,
+  CHANNEL_KIND_ROUTED,
   ensureConfig,
   expectReject,
   fund,
@@ -79,10 +81,12 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     payee: Party;
   }
 
-  let agents: Party[] = [];
+  let directAgents: Party[] = [];
   let gateway: Party;
   let providers: Party[] = [];
-  const chanAG: Chan[] = [];
+  const directAG: Chan[] = [];
+  let routedAgent: Party;
+  let routedAG: Chan;
   let staging: PublicKey;
   let firstBatch = true;
   let lastComputation: anchor.BN | undefined;
@@ -167,7 +171,11 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     };
   }
 
-  async function openChannel(from: Party, to: Party): Promise<Chan> {
+  async function openChannel(
+    from: Party,
+    to: Party,
+    kind: number,
+  ): Promise<Chan> {
     const key = seeds.channel(
       program.programId,
       from.participant,
@@ -175,7 +183,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       mint
     );
     await program.methods
-      .createChannel()
+      .createChannel(kind)
       .accounts({
         payerOwner: from.owner.publicKey,
         config: configPda,
@@ -191,6 +199,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       .signers([from.owner])
       .rpc();
     const channel = await program.account.channel.fetch(key);
+    expect(channel.kind).to.equal(kind);
     return {
       key,
       id: BigInt(channel.channelId.toString()),
@@ -366,17 +375,21 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       baseUrl && `${baseUrl}/clear_route32.arcis`
     );
 
-    agents = [
+    directAgents = [
       await makeParty(100 * ONE),
       await makeParty(100 * ONE),
       await makeParty(100 * ONE),
     ];
     gateway = await makeParty();
     providers = [await makeParty(), await makeParty()];
-    for (const agent of agents) chanAG.push(await openChannel(agent, gateway));
-    await lock(chanAG[0], 60 * ONE);
-    await lock(chanAG[1], 30 * ONE);
-    await lock(chanAG[2], 100 * ONE);
+    for (const agent of directAgents)
+      directAG.push(await openChannel(agent, gateway, CHANNEL_KIND_DIRECT));
+    await lock(directAG[0], 60 * ONE);
+    await lock(directAG[1], 30 * ONE);
+    await lock(directAG[2], 100 * ONE);
+    routedAgent = await makeParty(100 * ONE);
+    routedAG = await openChannel(routedAgent, gateway, CHANNEL_KIND_ROUTED);
+    await lock(routedAG, 60 * ONE);
     staging = await openStaging(program, relayer, KIND_UNILATERAL);
     await assertSolvent();
   });
@@ -386,7 +399,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       10 * ONE,
       new PublicKey(Buffer.alloc(32, 0xff))
     );
-    const weirdChannel = await openChannel(weird, gateway);
+    const weirdChannel = await openChannel(weird, gateway, CHANNEL_KIND_DIRECT);
     await lock(weirdChannel, 5 * ONE);
     const records: UnilateralRecord[] = [
       {
@@ -394,8 +407,8 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
         channel: weirdChannel.key,
         signature: Buffer.alloc(64, 0xff),
       },
-      { ...uniRecord(chanAG[2], ONE), signature: Buffer.alloc(64, 1) },
-      uniRecord(chanAG[2], ONE),
+      { ...uniRecord(directAG[2], ONE), signature: Buffer.alloc(64, 1) },
+      uniRecord(directAG[2], ONE),
     ];
     expect(
       await clear(
@@ -410,12 +423,53 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     );
   });
 
+  it("rejects direct commitments on Routed channels and routed commitments on Direct channels", async () => {
+    const tryBatch = async (kind: number, batch: Batch, fresh: boolean) => {
+      const { sealPre } = await stageBatch(program, relayer, staging, batch, {
+        fresh,
+      });
+      await sealAndQueue(program, relayer, staging, kind, 1, sealPre);
+    };
+
+    await expectReject(
+      tryBatch(
+        KIND_UNILATERAL,
+        buildUnilateralBatch([uniRecord(routedAG, ONE)]),
+        false,
+      ),
+      /InvalidChannelKind/,
+    );
+    await expectReject(
+      tryBatch(
+        KIND_ROUTE,
+        buildRouteBatch(
+          [
+            routeRecord(directAG[0], 0, ONE, [
+              { provider: providers[0], amount: ONE },
+            ]),
+          ],
+          gateway.participant,
+        ),
+        false,
+      ),
+      /InvalidChannelKind/,
+    );
+    expect(await channelState(routedAG)).to.deep.equal({
+      settled: 0,
+      locked: 60 * ONE,
+    });
+    expect(await channelState(directAG[0])).to.deep.equal({
+      settled: 0,
+      locked: 60 * ONE,
+    });
+  });
+
   it("settles valid unilateral commitments and clamps to locked funds", async () => {
     const records = [
-      uniRecord(chanAG[0], 40 * ONE),
-      uniRecord(chanAG[1], 50 * ONE),
-      uniRecord(chanAG[2], 10 * ONE, true),
-      uniRecord(chanAG[2], 25 * ONE),
+      uniRecord(directAG[0], 40 * ONE),
+      uniRecord(directAG[1], 50 * ONE),
+      uniRecord(directAG[2], 10 * ONE, true),
+      uniRecord(directAG[2], 25 * ONE),
     ];
     expect(
       await clear(
@@ -425,20 +479,20 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       )
     ).to.deep.equal([true, true, false, true]);
     const source = (i: number) =>
-      i === 0 ? chanAG[0].key : i === 1 ? chanAG[1].key : chanAG[2].key;
+      i === 0 ? directAG[0].key : i === 1 ? directAG[1].key : directAG[2].key;
     await settle(program, staging, [0, 1, 3], (i) => [
       source(i),
       gateway.balance,
     ]);
-    expect(await channelState(chanAG[0])).to.deep.equal({
+    expect(await channelState(directAG[0])).to.deep.equal({
       settled: 40 * ONE,
       locked: 20 * ONE,
     });
-    expect(await channelState(chanAG[1])).to.deep.equal({
+    expect(await channelState(directAG[1])).to.deep.equal({
       settled: 30 * ONE,
       locked: 0,
     });
-    expect(await channelState(chanAG[2])).to.deep.equal({
+    expect(await channelState(directAG[2])).to.deep.equal({
       settled: 25 * ONE,
       locked: 75 * ONE,
     });
@@ -446,19 +500,19 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   });
 
   it("resumes the same unilateral commitment after more funds are locked", async () => {
-    await lock(chanAG[1], 20 * ONE);
+    await lock(directAG[1], 20 * ONE);
     const records = [
-      uniRecord(chanAG[1], 50 * ONE),
-      uniRecord(chanAG[1], 50 * ONE),
+      uniRecord(directAG[1], 50 * ONE),
+      uniRecord(directAG[1], 50 * ONE),
     ];
     expect(
       await clear(KIND_UNILATERAL, buildUnilateralBatch(records), 2)
     ).to.deep.equal([true, true]);
     await settle(program, staging, [0, 1], () => [
-      chanAG[1].key,
+      directAG[1].key,
       gateway.balance,
     ]);
-    expect(await channelState(chanAG[1])).to.deep.equal({
+    expect(await channelState(directAG[1])).to.deep.equal({
       settled: 50 * ONE,
       locked: 0,
     });
@@ -466,20 +520,20 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   });
 
   it("pays multiple providers and the gateway fee from one signed commitment", async () => {
-    const record = routeRecord(chanAG[0], 40 * ONE, 55 * ONE, [
+    const record = routeRecord(routedAG, 0, 15 * ONE, [
       { provider: providers[0], amount: 12 * ONE },
       { provider: providers[1], amount: 2 * ONE },
     ]);
     await program.methods
       .requestUnlockChannelFunds(new anchor.BN(20 * ONE))
       .accounts({
-        payerOwner: agents[0].owner.publicKey,
-        payerParticipant: agents[0].participant,
+        payerOwner: routedAgent.owner.publicKey,
+        payerParticipant: routedAgent.participant,
         config: configPda,
-        channel: chanAG[0].key,
-        payerBalance: agents[0].balance,
+        channel: routedAG.key,
+        payerBalance: routedAgent.balance,
       })
-      .signers([agents[0].owner])
+      .signers([routedAgent.owner])
       .rpc();
 
     expect(
@@ -490,7 +544,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const g = await available(gateway);
     await expectReject(
       settle(program, staging, [0], () => [
-        chanAG[0].key,
+        routedAG.key,
         gateway.balance,
         providers[1].balance,
         providers[0].balance,
@@ -498,14 +552,14 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       /SettlementBalanceMismatch/
     );
     await settle(program, staging, [0], () => [
-      chanAG[0].key,
+      routedAG.key,
       gateway.balance,
       providers[0].balance,
       providers[1].balance,
     ]);
-    expect(await channelState(chanAG[0])).to.deep.equal({
-      settled: 55 * ONE,
-      locked: 5 * ONE,
+    expect(await channelState(routedAG)).to.deep.equal({
+      settled: 15 * ONE,
+      locked: 45 * ONE,
     });
     expect(await available(providers[0])).to.equal(p0 + 12 * ONE);
     expect(await available(providers[1])).to.equal(p1 + 2 * ONE);
@@ -515,7 +569,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
 
   it("pays whatever is locked now and resumes the same multi-provider commitment later", async () => {
     const agent = await makeParty(30 * ONE);
-    const source = await openChannel(agent, gateway);
+    const source = await openChannel(agent, gateway, CHANNEL_KIND_ROUTED);
     await lock(source, 20 * ONE);
     const record = routeRecord(source, 0, 25 * ONE, [
       { provider: providers[0], amount: 15 * ONE },
@@ -559,7 +613,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
 
   it("makes the gateway accounting trust explicit: the first conflicting commitment wins", async () => {
     const agent = await makeParty(25 * ONE);
-    const source = await openChannel(agent, gateway);
+    const source = await openChannel(agent, gateway, CHANNEL_KIND_ROUTED);
     await lock(source, 25 * ONE);
     const toProvider0 = routeRecord(source, 0, 25 * ONE, [
       { provider: providers[0], amount: 25 * ONE },
@@ -607,15 +661,15 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       );
     };
     const wrongId: UnilateralRecord = {
-      ...uniRecord(chanAG[0], 56 * ONE),
-      channel: chanAG[1].key,
+      ...uniRecord(directAG[0], 56 * ONE),
+      channel: directAG[1].key,
     };
     await expectReject(
       tryBatch(buildUnilateralBatch([wrongId]), 1),
       /StagedRecordMismatch/
     );
 
-    const future = routeRecord(chanAG[2], 30 * ONE, 40 * ONE, [
+    const future = routeRecord(routedAG, 30 * ONE, 40 * ONE, [
       { provider: providers[0], amount: 10 * ONE },
     ]);
     await expectReject(
@@ -623,7 +677,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       /RouteBaseNotReached/
     );
 
-    const gatewayAsProvider = routeRecord(chanAG[2], 25 * ONE, 30 * ONE, [
+    const gatewayAsProvider = routeRecord(routedAG, 15 * ONE, 20 * ONE, [
       { provider: gateway, amount: 5 * ONE },
     ]);
     await expectReject(
@@ -633,7 +687,11 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
 
     const otherGateway = await makeParty();
     const agent = await makeParty(10 * ONE);
-    const wrongGatewaySource = await openChannel(agent, otherGateway);
+    const wrongGatewaySource = await openChannel(
+      agent,
+      otherGateway,
+      CHANNEL_KIND_ROUTED,
+    );
     await lock(wrongGatewaySource, 5 * ONE);
     const mixed = routeRecord(
       wrongGatewaySource,
@@ -649,7 +707,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     );
 
     await expectReject(
-      tryBatch(buildUnilateralBatch([uniRecord(chanAG[2], 60 * ONE)]), 2),
+      tryBatch(buildUnilateralBatch([uniRecord(directAG[2], 60 * ONE)]), 2),
       /IncompleteBatch/
     );
   });
@@ -657,26 +715,26 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   it("executes an unlock for only what settlement left", async () => {
     expect(
       (
-        await program.account.channel.fetch(chanAG[0].key)
+        await program.account.channel.fetch(routedAG.key)
       ).pendingUnlockAmount.toNumber()
     ).to.equal(20 * ONE);
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    const before = await available(agents[0]);
+    const before = await available(routedAgent);
     await program.methods
       .executeUnlockChannelFunds()
       .accounts({
-        payerOwner: agents[0].owner.publicKey,
-        payerParticipant: agents[0].participant,
+        payerOwner: routedAgent.owner.publicKey,
+        payerParticipant: routedAgent.participant,
         config: configPda,
-        channel: chanAG[0].key,
-        payerBalance: agents[0].balance,
+        channel: routedAG.key,
+        payerBalance: routedAgent.balance,
       })
-      .signers([agents[0].owner])
+      .signers([routedAgent.owner])
       .rpc();
-    expect(await available(agents[0])).to.equal(before + 5 * ONE);
-    expect(await channelState(chanAG[0])).to.deep.equal({
-      settled: 55 * ONE,
-      locked: 0,
+    expect(await available(routedAgent)).to.equal(before + 20 * ONE);
+    expect(await channelState(routedAG)).to.deep.equal({
+      settled: 15 * ONE,
+      locked: 25 * ONE,
     });
     await assertSolvent();
   });
@@ -685,7 +743,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const channels: Chan[] = [];
     for (let i = 0; i < N_ROUTE; i++) {
       const agent = await makeParty(10 * ONE);
-      const source = await openChannel(agent, gateway);
+      const source = await openChannel(agent, gateway, CHANNEL_KIND_ROUTED);
       await lock(source, 8 * ONE);
       channels.push(source);
     }

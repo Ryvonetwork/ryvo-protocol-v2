@@ -102,9 +102,9 @@ pub mod ryvo_protocol {
 
     // --- channels ---
 
-    /// Open a one-way channel using the payer participant's immutable Arcis signer.
-    pub fn create_channel(ctx: Context<CreateChannel>) -> Result<()> {
-        instructions::channel::create_channel_handler(ctx)
+    /// Open a one-way Direct or Routed channel using the payer's immutable Arcis signer.
+    pub fn create_channel(ctx: Context<CreateChannel>, kind: u8) -> Result<()> {
+        instructions::channel::create_channel_handler(ctx, kind)
     }
 
     pub fn lock_channel_funds(ctx: Context<PayerChannelOp>, amount: u64) -> Result<()> {

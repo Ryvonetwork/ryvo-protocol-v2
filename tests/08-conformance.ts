@@ -32,6 +32,7 @@ import {
 } from "./commitment-client";
 import {
   CHAIN_ID,
+  CHANNEL_KIND_DIRECT,
   ensureConfig,
   fund,
   localWallet,
@@ -479,7 +480,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           m
         );
         await program.methods
-          .createChannel()
+          .createChannel(CHANNEL_KIND_DIRECT)
           .accounts({
             payerOwner: from.owner.publicKey,
             config: configPda,

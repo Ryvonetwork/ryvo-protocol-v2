@@ -1,5 +1,6 @@
 use crate::constants::{
-    BALANCE_SEED, CHANNEL_SEED, CONFIG_SEED, PARTICIPANT_SEED, TOKEN_CONFIG_SEED,
+    BALANCE_SEED, CHANNEL_KIND_DIRECT, CHANNEL_KIND_ROUTED, CHANNEL_SEED, CONFIG_SEED,
+    PARTICIPANT_SEED, TOKEN_CONFIG_SEED,
 };
 use crate::error::RyvoError;
 use crate::events::{
@@ -87,10 +88,14 @@ pub struct CreateChannel<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn create_channel_handler(ctx: Context<CreateChannel>) -> Result<()> {
+pub fn create_channel_handler(ctx: Context<CreateChannel>, kind: u8) -> Result<()> {
     require!(
         ctx.accounts.payer_participant.key() != ctx.accounts.payee_participant.key(),
         RyvoError::SelfChannelNotAllowed
+    );
+    require!(
+        kind == CHANNEL_KIND_DIRECT || kind == CHANNEL_KIND_ROUTED,
+        RyvoError::InvalidChannelKind
     );
     let config = &mut ctx.accounts.config;
     let channel_id = config.next_channel_id;
@@ -109,7 +114,8 @@ pub fn create_channel_handler(ctx: Context<CreateChannel>) -> Result<()> {
     channel.pending_unlock_amount = 0;
     channel.pending_unlock_at = 0;
     channel.bump = ctx.bumps.channel;
-    channel._reserved = [0u8; 88];
+    channel.kind = kind;
+    channel._reserved = [0u8; 87];
 
     emit!(ChannelCreated {
         channel: channel.key(),
@@ -118,6 +124,7 @@ pub fn create_channel_handler(ctx: Context<CreateChannel>) -> Result<()> {
         mint: channel.mint,
         authorized_signer,
         channel_id,
+        kind,
     });
     Ok(())
 }

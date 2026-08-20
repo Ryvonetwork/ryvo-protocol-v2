@@ -29,7 +29,7 @@ mod tests {
         assert_eq!(Balance::INIT_SPACE, 32 + 32 + 8 + 8 + 1 + 88);
         assert_eq!(
             Channel::INIT_SPACE,
-            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 64 + 1 + 88
+            32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 64 + 1 + 1 + 87
         );
     }
 
@@ -42,7 +42,7 @@ mod tests {
             ("Participant", 56usize),
             ("TokenConfig", 96),
             ("Balance", 88),
-            ("Channel", 88),
+            ("Channel", 87),
         ] {
             assert!(
                 reserved >= MIN_RESERVED,
@@ -68,7 +68,8 @@ mod tests {
             channel_id: 5,
             signer_slots: [[0xAA; 32], [0xBB; 32]],
             bump: 6,
-            _reserved: [0u8; 88],
+            kind: crate::constants::CHANNEL_KIND_ROUTED,
+            _reserved: [0u8; 87],
         };
         c.signer_slots[0][31] = 0x11;
         let mut bytes = Vec::new();
@@ -77,6 +78,11 @@ mod tests {
         assert_eq!(&bytes[off..off + 32], &c.signer_slots[0]);
         assert_eq!(&bytes[off + 32..off + 64], &c.signer_slots[1]);
         assert_eq!(bytes[off + 64], 6, "bump follows signer_slots");
+        assert_eq!(
+            bytes[off + 65],
+            crate::constants::CHANNEL_KIND_ROUTED,
+            "kind follows bump"
+        );
     }
 
     /// `Balance` holds nothing but free money and its identity. No pending-withdrawal state,

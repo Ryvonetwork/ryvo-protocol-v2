@@ -50,6 +50,7 @@ import {
   deriveMessageDomain,
   signCommitment,
 } from "../tests/commitment-client";
+import { CHANNEL_KIND_ROUTED } from "../tests/shared";
 import {
   N_ROUTE,
   RouteRecord,
@@ -409,7 +410,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const key = pda.channel(from.participant, to.participant, mint);
       const tx = new anchor.web3.Transaction().add(
         await program.methods
-          .createChannel()
+          .createChannel(CHANNEL_KIND_ROUTED)
           .accounts({
             payerOwner: from.owner.publicKey,
             config: pda.config,

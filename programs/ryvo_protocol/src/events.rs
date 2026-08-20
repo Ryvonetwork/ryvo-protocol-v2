@@ -80,6 +80,7 @@ pub struct ChannelCreated {
     pub mint: Pubkey,
     pub authorized_signer: Pubkey,
     pub channel_id: u64,
+    pub kind: u8,
 }
 
 #[event]

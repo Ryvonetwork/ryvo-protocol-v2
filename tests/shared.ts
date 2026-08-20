@@ -17,6 +17,8 @@ export const BPF_LOADER_UPGRADEABLE = new PublicKey(
  */
 export const CHANNEL_TIMELOCK = 2;
 export const CHAIN_ID = 0; // localnet
+export const CHANNEL_KIND_DIRECT = 1;
+export const CHANNEL_KIND_ROUTED = 2;
 
 /**
  * Provider pinned to `confirmed`.
