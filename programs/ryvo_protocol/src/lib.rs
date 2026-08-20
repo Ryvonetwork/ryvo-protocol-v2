@@ -127,6 +127,11 @@ pub mod ryvo_protocol {
         instructions::channel::request_unlock_channel_funds_handler(ctx, slot, amount)
     }
 
+    /// Cancel a pending unilateral unlock without changing the channel's locked balance.
+    pub fn cancel_unlock_channel_funds(ctx: Context<PayerChannelOp>, slot: u8) -> Result<()> {
+        instructions::channel::cancel_unlock_channel_funds_handler(ctx, slot)
+    }
+
     /// Payer-signed, not permissionless: a stale request must not be triggerable by a stranger.
     pub fn execute_unlock_channel_funds(ctx: Context<PayerChannelOp>, slot: u8) -> Result<()> {
         instructions::channel::execute_unlock_channel_funds_handler(ctx, slot)

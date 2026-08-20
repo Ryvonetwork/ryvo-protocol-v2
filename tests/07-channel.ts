@@ -527,6 +527,52 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await assertSolvent();
   });
 
+  it("lets only the payer cancel an unlock without adding funds", async () => {
+    await program.methods
+      .requestUnlockChannelFunds(slot, new anchor.BN(5 * ONE))
+      .accounts(payerOp(payer))
+      .signers([payer.owner])
+      .rpc();
+
+    const stranger = Keypair.generate();
+    await fund(provider, stranger.publicKey, 2);
+    await expectReject(
+      program.methods
+        .cancelUnlockChannelFunds(slot)
+        .accounts({ ...payerOp(payer), payerOwner: stranger.publicKey })
+        .signers([stranger])
+        .rpc()
+    );
+
+    const before = await state();
+    await program.methods
+      .cancelUnlockChannelFunds(slot)
+      .accounts(payerOp(payer))
+      .signers([payer.owner])
+      .rpc();
+    const after = await state();
+    expect(after.locked).to.equal(before.locked);
+    expect(after.pending).to.equal(0);
+    expect(after.unlockAt).to.equal(0);
+    await expectReject(
+      program.methods
+        .executeUnlockChannelFunds(slot)
+        .accounts(payerOp(payer))
+        .signers([payer.owner])
+        .rpc(),
+      /NoChannelUnlockPending/
+    );
+    await expectReject(
+      program.methods
+        .cancelUnlockChannelFunds(slot)
+        .accounts(payerOp(payer))
+        .signers([payer.owner])
+        .rpc(),
+      /NoChannelUnlockPending/
+    );
+    await assertSolvent();
+  });
+
   it("cooperative release supersedes a pending request", async () => {
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(25 * ONE))

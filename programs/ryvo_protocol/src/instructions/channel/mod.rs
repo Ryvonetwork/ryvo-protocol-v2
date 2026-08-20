@@ -297,6 +297,29 @@ pub fn request_unlock_channel_funds_handler(
     Ok(())
 }
 
+pub fn cancel_unlock_channel_funds_handler(ctx: Context<PayerChannelOp>, slot: u8) -> Result<()> {
+    let bucket_key = ctx.accounts.bucket.key();
+    let mut bucket = ctx.accounts.bucket.load_mut()?;
+    let (i, channel_id) = payer_slot(
+        &bucket,
+        slot,
+        ctx.accounts.payer_participant.key(),
+        ctx.accounts.payer_balance.mint,
+    )?;
+    let cancelled = bucket.pending_unlock_amount[i];
+    require!(cancelled > 0, RyvoError::NoChannelUnlockPending);
+    bucket.pending_unlock_amount[i] = 0;
+    bucket.pending_unlock_at[i] = 0;
+
+    emit!(ChannelUnlockCancelled {
+        bucket: bucket_key,
+        slot,
+        channel_id,
+        cancelled_amount: cancelled,
+    });
+    Ok(())
+}
+
 pub fn execute_unlock_channel_funds_handler(ctx: Context<PayerChannelOp>, slot: u8) -> Result<()> {
     let bucket_key = ctx.accounts.bucket.key();
     let mut bucket = ctx.accounts.bucket.load_mut()?;
