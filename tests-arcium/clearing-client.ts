@@ -52,7 +52,7 @@ import {
 import { buildV1Transaction, sendV1 } from "./txv1";
 
 /** Commitments per batch. Must equal `N_UNI` / `N_ROUTE` in the program and the circuit. */
-export const N_UNI = 64;
+export const N_UNI = 128;
 export const N_ROUTE = 32;
 /** Dense record sizes on the wire (what `stage_records` takes). */
 export const UNILATERAL_RECORD_LEN = 8 + 8 + 64; // channel_id, target, sig
@@ -62,13 +62,13 @@ export const ROUTE_ALLOCATION_LEN = 16;
 export const UNILATERAL_SLOTS_PER_RECORD = 1 + SIG_SLOTS + 2 + 1; // 7
 export const ROUTE_SLOTS_PER_RECORD =
   2 + MAX_ROUTE_ALLOCATIONS + 2 * SIG_SLOTS + 2 + 1; // 27
-export const UNILATERAL_SLOTS = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 448
+export const UNILATERAL_SLOTS = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 896
 export const ROUTE_SLOTS = N_ROUTE * ROUTE_SLOTS_PER_RECORD + 2; // shared gateway key
 export const MAX_SLOTS = Math.max(UNILATERAL_SLOTS, ROUTE_SLOTS);
-/** 8-byte discriminator + 120-byte header + MAX_SLOTS slots. Must equal `StagingBuffer::SPACE`. */
-export const STAGING_SPACE = 8 + 120 + MAX_SLOTS * SLOT;
+/** 8-byte discriminator + 144-byte header + MAX_SLOTS slots. Must equal `StagingBuffer::SPACE`. */
+export const STAGING_SPACE = 8 + 144 + MAX_SLOTS * SLOT;
 export const CIRCUITS = {
-  [KIND_UNILATERAL]: "clear_unilateral64",
+  [KIND_UNILATERAL]: "clear_unilateral128",
   [KIND_ROUTE]: "clear_route32",
 } as const;
 export type CircuitName = (typeof CIRCUITS)[keyof typeof CIRCUITS];
@@ -226,7 +226,10 @@ export async function supportsTxV1(
   return v1Support;
 }
 
-/** Staging transactions a full batch of `kind` needs under each format (for reporting): a dry run of the packer. */
+/**
+ * Staging transactions a full batch needs under each format. The dry run uses the production
+ * bucket layout: up to 256 source channels share one bucket account.
+ */
 export async function stagingTxCount(
   program: Program<RyvoProtocol>,
   relayer: Keypair,
@@ -237,12 +240,16 @@ export async function stagingTxCount(
     kind === KIND_UNILATERAL
       ? UNILATERAL_RECORD_LEN
       : ROUTE_RECORD_BASE_LEN + ROUTE_ALLOCATION_LEN;
+  const sourceBuckets = Array.from(
+    { length: Math.ceil(n / 256) },
+    () => Keypair.generate().publicKey
+  );
   const batch: Batch = {
     kind,
     sharedAccounts: kind === KIND_ROUTE ? [Keypair.generate().publicKey] : [],
-    records: Array.from({ length: n }, () => ({
+    records: Array.from({ length: n }, (_, i) => ({
       data: Buffer.alloc(len, 1),
-      channels: [Keypair.generate().publicKey],
+      channels: [sourceBuckets[Math.floor(i / 256)]],
     })),
   };
   const staging = Keypair.generate().publicKey;
@@ -270,7 +277,7 @@ export async function stagingTxCount(
 }
 
 /**
- * Create a relayer's reusable staging buffer: `create_account` (20 KB exceeds the CPI-creation
+ * Create a relayer's reusable staging buffer: `create_account` (29 KB exceeds the CPI-creation
  * cap, so the relayer creates it at the top level with the program as owner) + `open_staging`,
  * which also creates the buffer's `ClearingResult`. One transaction.
  */
@@ -649,9 +656,7 @@ export async function settlementInstruction(
       groups.set(groupKey, group);
     }
     group.commitmentIndices.push(index);
-    group.providerBalanceAccounts.push(
-      ...accounts.slice(2).map(accountNumber)
-    );
+    group.providerBalanceAccounts.push(...accounts.slice(2).map(accountNumber));
   }
   const remaining: AccountMeta[] = uniqueAccounts.map((pubkey) => ({
     pubkey,
@@ -815,7 +820,7 @@ export async function ensureCompDef(
   const mxeAcc = await arciumProgram.account.mxeAccount.fetch(mxeAccount);
   const lut = getLookupTableAddress(program.programId, mxeAcc.lutOffsetSlot);
   const m =
-    circuit === "clear_unilateral64"
+    circuit === "clear_unilateral128"
       ? program.methods.initClearUnilateralCompDef(offchainUrl ?? null)
       : program.methods.initClearRouteCompDef(offchainUrl ?? null);
   await m

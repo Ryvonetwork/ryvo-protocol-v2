@@ -18,9 +18,9 @@ mod circuits {
     use arcis::*;
 
     /// Commitments per batch. Fixed at compile time; shorter batches are padded by the relayer.
-    /// Route batches are half the size because each commitment carries up to 16 provider
-    /// allocations and two signatures; 64 route commitments made circuit compilation impractical.
-    pub const N_UNI: usize = 64;
+    /// Routed commitments carry two signatures and up to 16 provider allocations, so their
+    /// production batch is smaller than the direct circuit.
+    pub const N_UNI: usize = 128;
     pub const N_ROUTE: usize = 32;
     pub const MAX_ROUTE_ALLOCATIONS: usize = 16;
 
@@ -50,7 +50,7 @@ mod circuits {
 
     /// One signer per record. Preimage: TAG(18) | domain(16) | 0x01 | 0x01 | id_target(16) = 52 B.
     #[instruction]
-    pub fn clear_unilateral64(
+    pub fn clear_unilateral128(
         domain: u128,
         ids: [u128; N_UNI],
         vks: [Pack<VerifyingKey>; N_UNI],

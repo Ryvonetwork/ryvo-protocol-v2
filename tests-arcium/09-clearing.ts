@@ -410,8 +410,8 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       program,
       provider,
       relayer,
-      "clear_unilateral64",
-      baseUrl && `${baseUrl}/clear_unilateral64.arcis`
+      "clear_unilateral128",
+      baseUrl && `${baseUrl}/clear_unilateral128.arcis`
     );
     await ensureCompDef(
       program,
@@ -915,7 +915,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await assertSolvent();
   });
 
-  it("settles 64 direct channels in one transaction", async () => {
+  it("settles 128 direct channels in one transaction", async () => {
     const channels: Chan[] = [];
     for (let i = 0; i < N_UNI; i++) {
       const channel = await openChannel(
@@ -944,7 +944,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       (index) => [channels[index].key, gateway.balance]
     );
     console.log(
-      `    64 direct: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
+      `    128 direct: ${metrics.legacyBytes} bytes, ${metrics.uniqueAccounts} unique accounts, ${metrics.computeUnits} CU`
     );
     expect(metrics.legacyBytes).to.be.at.most(1232);
     expect(metrics.uniqueAccounts).to.be.at.most(7);

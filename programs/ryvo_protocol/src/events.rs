@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
-// One event per state transition. Indexers reconstruct protocol history from these alone, so
-// every event carries enough identity to locate the accounts it refers to without a prior read.
+// Events expose protocol state transitions. Settlement emits one summary per instruction because
+// one event per commitment would exceed Solana's transaction log limit at production batch sizes.
 
 #[event]
 pub struct ConfigInitialized {
@@ -150,38 +150,16 @@ pub struct BatchCleared {
 }
 
 #[event]
-pub struct ChannelSettled {
-    pub bucket: Pubkey,
-    pub slot: u8,
-    pub channel_id: u64,
-    pub target_cumulative: u64,
-    /// `min(target - settled, locked)`. Zero means the record was a no-op skip.
+pub struct CommitmentsSettled {
+    pub staging: Pubkey,
+    pub kind: u8,
+    pub commitment_count: u16,
+    /// Total removed from source channels by this instruction.
     pub moved: u64,
-    pub settled_cumulative: u64,
-    pub locked_balance: u64,
-}
-
-#[event]
-pub struct RouteSettled {
-    pub source_bucket: Pubkey,
-    pub source_slot: u8,
-    pub source_channel_id: u64,
-    pub base_cumulative: u64,
-    pub target_cumulative: u64,
-    pub moved: u64,
+    /// Direct payee credits, or routed provider credits.
     pub provider_paid: u64,
+    /// Always zero for direct commitments.
     pub gateway_fee: u64,
-    pub allocation_count: u8,
-}
-
-#[event]
-pub struct RouteProviderPaid {
-    pub source_bucket: Pubkey,
-    pub source_slot: u8,
-    pub source_channel_id: u64,
-    pub provider: Pubkey,
-    pub participant_id: u64,
-    pub amount: u64,
 }
 
 /// The relayer reset or closed a buffer whose batch was not done (callback missing, or verified

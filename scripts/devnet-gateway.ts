@@ -7,7 +7,7 @@
  *   1. bootstrap: initialize config, Arcium signer PDA, computation definitions (circuits by URL)
  *   2. test mint + vault; 100 agents / 1 gateway / 10 providers registered; 100 source channels
  *   3. 100 route commitments signed by agent then gateway
- *   4. staged in 4 batches of 32, sealed + queued, callbacks awaited
+ *   4. staged in batches of 32, sealed + queued, callbacks awaited
  *   5. settled through v0 transactions and an address lookup table
  *   6. balances asserted, solvency asserted, costs printed, staging rent reclaimed
  *
@@ -281,8 +281,8 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       program,
       provider,
       payer,
-      "clear_unilateral64",
-      `${CIRCUIT_BASE_URL}/clear_unilateral64.arcis`
+      "clear_unilateral128",
+      `${CIRCUIT_BASE_URL}/clear_unilateral128.arcis`
     );
     await ensureCompDef(
       program,

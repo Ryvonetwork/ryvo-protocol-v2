@@ -79,8 +79,7 @@ use crate::constants::{
 };
 use crate::error::RyvoError;
 use crate::events::{
-    BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, ChannelSettled,
-    RouteProviderPaid, RouteSettled,
+    BatchAbandoned, BatchCleared, BatchClearingFailed, BatchQueued, CommitmentsSettled,
 };
 use crate::state::{Balance, ChannelBucket, Config, Participant, CHANNEL_BUCKET_VERSION};
 use crate::{ArciumSignerAccount, ID, ID_CONST};
@@ -90,9 +89,8 @@ use arcium_client::idl::arcium::types::CallbackAccount;
 
 /// Commitments per batch. Must equal `N_UNI` / `N_ROUTE` in `encrypted-ixs`. The circuit shape
 /// is fixed at compile time, so a shorter batch is padded at seal time (record 0 repeated) and
-/// `count` tells `settle_channels` where the real ones end. The current circuits use 64 direct or
-/// 32 routed commitments; `ClearingResult` reserves 256 bits for the off-chain-input path.
-pub const N_UNI: usize = 64;
+/// `count` tells `settle_channels` where the real ones end.
+pub const N_UNI: usize = 128;
 pub const N_ROUTE: usize = 32;
 
 /// Dense record sizes on the wire (`stage_records`).
@@ -103,7 +101,7 @@ pub const ROUTE_ALLOCATION_LEN: usize = 16;
 /// Slots per commitment once laid out.
 pub const UNILATERAL_SLOTS_PER_RECORD: usize = 1 + SIG_SLOTS + KEY_SLOTS + 1; // 7
 pub const ROUTE_SLOTS_PER_RECORD: usize = 2 + MAX_ROUTE_ALLOCATIONS + 2 * SIG_SLOTS + KEY_SLOTS + 1; // 27
-pub const UNILATERAL_SLOTS: usize = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 448
+pub const UNILATERAL_SLOTS: usize = N_UNI * UNILATERAL_SLOTS_PER_RECORD; // 896
 pub const ROUTE_SLOTS: usize = N_ROUTE * ROUTE_SLOTS_PER_RECORD + KEY_SLOTS; // 866
 pub const MAX_SLOTS: usize = if UNILATERAL_SLOTS > ROUTE_SLOTS {
     UNILATERAL_SLOTS
@@ -136,7 +134,7 @@ pub const fn batch_size(kind: u8) -> usize {
     }
 }
 
-const COMP_DEF_OFFSET_CLEAR_UNILATERAL: u32 = comp_def_offset("clear_unilateral64");
+const COMP_DEF_OFFSET_CLEAR_UNILATERAL: u32 = comp_def_offset("clear_unilateral128");
 const COMP_DEF_OFFSET_CLEAR_ROUTE: u32 = comp_def_offset("clear_route32");
 
 // ============================================================================================
@@ -166,7 +164,7 @@ pub struct StagingBuffer {
     pub _pad: [u8; 4],
     /// Bit i set ⇒ index i was written by `stage_records` in THIS batch. Seal requires every
     /// index below `count` to be set, so a batch can never carry a previous batch's bytes.
-    pub staged_mask: u64,
+    pub staged_mask: [u8; (MAX_CLEARING_COMMITMENTS / 8) as usize],
     /// Route batches contain one gateway and mint so the gateway verification key is shared.
     /// Both are zero for unilateral batches.
     pub route_gateway: Pubkey,
@@ -175,7 +173,7 @@ pub struct StagingBuffer {
 }
 
 impl StagingBuffer {
-    pub const HEADER_LEN: usize = 8 + 32 + 2 + 1 + 1 + 4 + 8 + 32 + 32; // 120
+    pub const HEADER_LEN: usize = 8 + 32 + 2 + 1 + 1 + 4 + 32 + 32 + 32; // 144
     pub const SPACE: usize = 8 + Self::HEADER_LEN + SLOT * MAX_SLOTS;
 
     pub fn slots_per_record(kind: u8) -> Result<usize> {
@@ -313,7 +311,7 @@ pub fn init_arcium_signer_handler(ctx: Context<InitArciumSigner>) -> Result<()> 
     Ok(())
 }
 
-#[init_computation_definition_accounts("clear_unilateral64", payer)]
+#[init_computation_definition_accounts("clear_unilateral128", payer)]
 #[derive(Accounts)]
 pub struct InitClearUnilateralCompDef<'info> {
     #[account(mut)]
@@ -389,7 +387,7 @@ pub fn open_staging_handler(ctx: Context<OpenStaging>, kind: u8) -> Result<()> {
     s.count = 0;
     s.kind = kind;
     s.sealed = 0;
-    s.staged_mask = 0;
+    s.staged_mask = [0u8; (MAX_CLEARING_COMMITMENTS / 8) as usize];
     s.route_gateway = Pubkey::default();
     s.route_mint = Pubkey::default();
     let r = &mut ctx.accounts.clearing_result;
@@ -439,7 +437,7 @@ pub fn reset_staging_handler(ctx: Context<ResetStaging>, kind: u8) -> Result<()>
     s.count = 0;
     s.kind = kind;
     s.sealed = 0;
-    s.staged_mask = 0;
+    s.staged_mask = [0u8; (MAX_CLEARING_COMMITMENTS / 8) as usize];
     s.route_gateway = Pubkey::default();
     s.route_mint = Pubkey::default();
     // Zero the slots (one memset; cheap). `staged_mask` already guarantees a sealed batch never
@@ -513,7 +511,7 @@ pub fn stage_records_handler<'info>(
                     u64_at(rec, 8) > source.settled_cumulative,
                     RyvoError::CommitmentAlreadySettled
                 );
-                s.staged_mask |= 1u64 << i;
+                set_bit(&mut s.staged_mask, i);
             }
         }
         KIND_ROUTE => {
@@ -639,7 +637,7 @@ pub fn stage_records_handler<'info>(
                     s.route_gateway == gateway.key() && s.route_mint == source.mint,
                     RyvoError::RouteBatchMismatch
                 );
-                s.staged_mask |= 1u64 << i;
+                set_bit(&mut s.staged_mask, i);
             }
         }
         _ => return Err(RyvoError::InvalidStagingKind.into()),
@@ -698,7 +696,7 @@ fn write_bucket_source<'info>(
 // Seal + queue
 // ============================================================================================
 
-#[queue_computation_accounts("clear_unilateral64", relayer)]
+#[queue_computation_accounts("clear_unilateral128", relayer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct SealAndQueueUnilateral<'info> {
@@ -820,12 +818,10 @@ fn seal_common(
     // 0 means "no computation bound" in ClearingResult, so it is not a usable offset.
     require!(computation_offset != 0, RyvoError::InvalidStagingData);
     // Every index below count must have been staged in this batch — never a previous batch's bytes.
-    let needed: u64 = if count as usize == 64 {
-        u64::MAX
-    } else {
-        (1u64 << count) - 1
-    };
-    require!(s.staged_mask & needed == needed, RyvoError::IncompleteBatch);
+    require!(
+        (0..count as usize).all(|i| bit(&s.staged_mask, i)),
+        RyvoError::IncompleteBatch
+    );
     if kind == KIND_ROUTE {
         require!(
             s.route_gateway != Pubkey::default() && s.route_mint != Pubkey::default(),
@@ -843,9 +839,9 @@ fn seal_common(
         s.copy_record(kind, 0, i);
     }
 
-    // Built by hand rather than through ArgBuilder so the vectors are sized once (the on-chain
-    // bump allocator never frees). One account range per column, in the circuit's parameter
-    // order (each range stays within the 6 KB proven on devnet).
+    // Built by hand rather than through ArgBuilder so the vectors are sized once. One account
+    // range per column, in the circuit's parameter order; the largest is the 12 KiB direct
+    // signature column covered by the maximum-batch integration test.
     let key = staging_loader.key();
     let mut args: Vec<ArgumentRef> = Vec::with_capacity(7);
     let mut accounts: Vec<AccountArgument> = Vec::with_capacity(6);
@@ -910,7 +906,7 @@ pub fn seal_and_queue_unilateral_handler(
         ctx.accounts,
         computation_offset,
         args,
-        vec![ClearUnilateral64Callback::callback_ix(
+        vec![ClearUnilateral128Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &[CallbackAccount {
@@ -990,9 +986,9 @@ pub fn seal_and_queue_route_handler(
 // Callbacks
 // ============================================================================================
 
-#[callback_accounts("clear_unilateral64")]
+#[callback_accounts("clear_unilateral128")]
 #[derive(Accounts)]
-pub struct ClearUnilateral64Callback<'info> {
+pub struct ClearUnilateral128Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CLEAR_UNILATERAL))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
@@ -1213,6 +1209,7 @@ pub fn settle_channels_handler<'info>(
     ctx: Context<'info, SettleChannels<'info>>,
     groups: Vec<SettlementGroup>,
 ) -> Result<()> {
+    let staging_key = ctx.accounts.staging.key();
     let result = &mut ctx.accounts.clearing_result;
     require!(result.verified, RyvoError::BatchNotCleared);
     let staging = ctx.accounts.staging.load()?;
@@ -1246,16 +1243,38 @@ pub fn settle_channels_handler<'info>(
         }
     }
 
+    let mut commitment_count = 0u16;
+    let mut moved_total = 0u64;
+    let mut provider_paid_total = 0u64;
     for group in &groups {
-        match kind {
+        let (moved, provider_paid) = match kind {
             KIND_UNILATERAL => settle_unilateral_group(&staging, group, ctx.remaining_accounts)?,
             KIND_ROUTE => settle_route_group(&staging, group, ctx.remaining_accounts)?,
             _ => return Err(RyvoError::InvalidStagingKind.into()),
-        }
+        };
+        commitment_count = commitment_count
+            .checked_add(group.commitment_indices.len() as u16)
+            .ok_or(RyvoError::MathOverflow)?;
+        moved_total = moved_total
+            .checked_add(moved)
+            .ok_or(RyvoError::MathOverflow)?;
+        provider_paid_total = provider_paid_total
+            .checked_add(provider_paid)
+            .ok_or(RyvoError::MathOverflow)?;
         for &idx in &group.commitment_indices {
             set_bit(&mut result.applied, idx as usize);
         }
     }
+    emit!(CommitmentsSettled {
+        staging: staging_key,
+        kind,
+        commitment_count,
+        moved: moved_total,
+        provider_paid: provider_paid_total,
+        gateway_fee: moved_total
+            .checked_sub(provider_paid_total)
+            .ok_or(RyvoError::MathOverflow)?,
+    });
     Ok(())
 }
 
@@ -1291,7 +1310,7 @@ fn settle_unilateral_group<'info>(
     staging: &StagingBuffer,
     group: &SettlementGroup,
     accounts: &'info [AccountInfo<'info>],
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     require!(
         group.provider_balance_accounts.is_empty(),
         RyvoError::InvalidSettlementAccounts
@@ -1319,6 +1338,7 @@ fn settle_unilateral_group<'info>(
     );
 
     let mut balance_changed = false;
+    let mut moved_total = 0u64;
     for &idx in &group.commitment_indices {
         let i = idx as usize;
         let (channel_id, target) = unpack_pair(staged_u128(staging, UNI_COL_IDS, i));
@@ -1346,27 +1366,21 @@ fn settle_unilateral_group<'info>(
                 .ok_or(RyvoError::MathOverflow)?;
             balance_changed = true;
         }
-        emit!(ChannelSettled {
-            bucket: staged_bucket,
-            slot: slot as u8,
-            channel_id,
-            target_cumulative: target,
-            moved,
-            settled_cumulative: bucket.settled_cumulative[slot],
-            locked_balance: bucket.locked_balance[slot],
-        });
+        moved_total = moved_total
+            .checked_add(moved)
+            .ok_or(RyvoError::MathOverflow)?;
     }
     if balance_changed {
         payee_balance.exit(&crate::ID)?;
     }
-    Ok(())
+    Ok((moved_total, moved_total))
 }
 
 fn settle_route_group<'info>(
     staging: &StagingBuffer,
     group: &SettlementGroup,
     accounts: &'info [AccountInfo<'info>],
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     let mut expected_provider_accounts = 0usize;
     for &idx in &group.commitment_indices {
         let (_, allocation_count) =
@@ -1408,6 +1422,8 @@ fn settle_route_group<'info>(
     );
     let mut provider_cursor = 0usize;
     let mut gateway_changed = false;
+    let mut moved_total = 0u64;
+    let mut provider_paid_total = 0u64;
     for &idx in &group.commitment_indices {
         let i = idx as usize;
         let (source_id, base) = unpack_pair(staged_u128(staging, RT_COL_SOURCE_BASE, i));
@@ -1472,14 +1488,6 @@ fn settle_route_group<'info>(
                     .checked_add(paid)
                     .ok_or(RyvoError::MathOverflow)?;
             }
-            emit!(RouteProviderPaid {
-                source_bucket: staged_bucket,
-                source_slot: slot as u8,
-                source_channel_id: source_id,
-                provider: provider_balance.participant,
-                participant_id,
-                amount: paid,
-            });
             range_start = range_end;
         }
 
@@ -1493,22 +1501,17 @@ fn settle_route_group<'info>(
                 .ok_or(RyvoError::MathOverflow)?;
             gateway_changed = true;
         }
-        emit!(RouteSettled {
-            source_bucket: staged_bucket,
-            source_slot: slot as u8,
-            source_channel_id: source_id,
-            base_cumulative: base,
-            target_cumulative: target,
-            moved,
-            provider_paid,
-            gateway_fee,
-            allocation_count: allocation_count as u8,
-        });
+        moved_total = moved_total
+            .checked_add(moved)
+            .ok_or(RyvoError::MathOverflow)?;
+        provider_paid_total = provider_paid_total
+            .checked_add(provider_paid)
+            .ok_or(RyvoError::MathOverflow)?;
     }
     if gateway_changed {
         gateway_balance.exit(&crate::ID)?;
     }
-    Ok(())
+    Ok((moved_total, provider_paid_total))
 }
 
 // ============================================================================================
@@ -1555,8 +1558,8 @@ mod layout_tests {
 
     #[test]
     fn clearing_account_sizes_are_pinned() {
-        assert_eq!(core::mem::size_of::<StagingBuffer>(), 27_832);
-        assert_eq!(StagingBuffer::SPACE, 27_840);
+        assert_eq!(core::mem::size_of::<StagingBuffer>(), 28_816);
+        assert_eq!(StagingBuffer::SPACE, 28_824);
         assert_eq!(ClearingResult::INIT_SPACE, 133);
     }
 

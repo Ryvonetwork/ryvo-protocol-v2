@@ -164,7 +164,7 @@ pub mod ryvo_protocol {
         let source = circuit_url.map(|url| {
             CircuitSource::OffChain(OffChainCircuitSource {
                 source: url,
-                hash: circuit_hash!("clear_unilateral64"),
+                hash: circuit_hash!("clear_unilateral128"),
             })
         });
         init_computation_def(ctx.accounts, source)?;
@@ -243,10 +243,10 @@ pub mod ryvo_protocol {
 
     // --- clearing: callbacks (invoked by Arcium) ---
 
-    #[arcium_callback(encrypted_ix = "clear_unilateral64")]
-    pub fn clear_unilateral64_callback(
-        ctx: Context<ClearUnilateral64Callback>,
-        output: SignedComputationOutputs<ClearUnilateral64Output>,
+    #[arcium_callback(encrypted_ix = "clear_unilateral128")]
+    pub fn clear_unilateral128_callback(
+        ctx: Context<ClearUnilateral128Callback>,
+        output: SignedComputationOutputs<ClearUnilateral128Output>,
     ) -> Result<()> {
         if let clearing::CallbackMatch::Stale = clearing::require_current_computation(
             &ctx.accounts.clearing_result,
@@ -269,7 +269,7 @@ pub mod ryvo_protocol {
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
         ) {
-            Ok(ClearUnilateral64Output { field_0 }) => field_0,
+            Ok(ClearUnilateral128Output { field_0 }) => field_0,
             Err(_) => return Err(RyvoError::AbortedComputation.into()),
         };
         clearing::record_bitmap(&mut ctx.accounts.clearing_result, &bits, KIND_UNILATERAL)

@@ -7,7 +7,7 @@ the program at build time via `circuit_hash!`).
 
 | circuit | sha256 |
 | --- | --- |
-| clear_unilateral64.arcis (N_UNI = 64) | 6854ddf42a6fc3498a4e851b41e3afc95c009f4c1e54ae0931bef7a1c69ee012 |
+| clear_unilateral128.arcis (N_UNI = 128) | 4651e98bbf628c00c612810fc9e0d33ef625881ea177cac0caaf572fcf610192 |
 | clear_route32.arcis (N_ROUTE = 32, 16 provider allocations each) | ab8c41161aaf9898c32c3a098fddfc6bef9a741228f33651bdd3df5782bc9e82 |
 
 The batch size is part of the name: a comp def is registered once per name, and the circuit
