@@ -74,7 +74,7 @@ const RPC_DISPLAY = RPC.replace(/([?&]api-key=)[^&]+/i, "$1<redacted>");
 const CLUSTER_OFFSET = Number(process.env.ARCIUM_CLUSTER_OFFSET ?? 456);
 const CIRCUIT_BASE_URL =
   process.env.RYVO_CIRCUIT_BASE_URL ??
-  "https://raw.githubusercontent.com/Ryvonetwork/ryvo-protocol-v2/03d81142aedf859515aabf688226b8eea4e3b71f/circuits";
+  "https://raw.githubusercontent.com/Ryvonetwork/ryvo-protocol-v2/f7337ffc3675945e86fd4cc2299c1553f5b5a9cd/circuits";
 const DEVNET_CHAIN_ID = 1;
 const CHANNEL_TIMELOCK = 10;
 const CHANNEL_KIND_ROUTED = 2;
@@ -275,8 +275,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     );
     await ensureArciumSigner(program, payer);
     const t0 = Date.now();
-    // The unilateral comp def is registered on demand (this smoke exercises routes only, and a
-    // deactivated-but-not-yet-closable comp def at that offset would make init fail).
+    // Pin both computation definitions to committed circuit files whose hashes match this build.
     await ensureCompDef(
       program,
       provider,
