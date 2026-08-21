@@ -66,10 +66,19 @@ export ANCHOR_WALLET="$WALLET"
 npx ts-mocha -p ./tsconfig.json -t 1000000 "tests/**/*.ts"
 
 echo "==> finalizing program and verifying immutability"
+CONFIG_AUTHORITY="$(node -e '
+const { Keypair } = require("@solana/web3.js");
+process.stdout.write(
+  Keypair.fromSeed(Uint8Array.from(Buffer.alloc(32, 7))).publicKey.toBase58()
+);
+')"
 RYVO_CONFIRM_FINALIZE="$PROGRAM_ID" \
 RPC_URL="$RPC_URL" \
 WALLET="$WALLET" \
 PROGRAM_ID="$PROGRAM_ID" \
+EXPECTED_CONFIG_AUTHORITY="$CONFIG_AUTHORITY" \
+EXPECTED_CHAIN_ID=0 \
+EXPECTED_TIMELOCK_SECONDS=2 \
   bash scripts/finalize-program.sh >/dev/null
 AUTHORITY="$(solana --url "$RPC_URL" program show "$PROGRAM_ID" | awk '/Authority/ {print $2}')"
 if [ "$AUTHORITY" != "none" ]; then

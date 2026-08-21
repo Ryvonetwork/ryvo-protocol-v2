@@ -4,7 +4,13 @@ import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { RyvoProtocol } from "../target/types/ryvo_protocol";
 import { expect } from "chai";
 import { createHash } from "crypto";
-import { fund, localWallet, protocolAuthority, seeds, setupProvider } from "./shared";
+import {
+  fund,
+  localWallet,
+  protocolAuthority,
+  seeds,
+  setupProvider,
+} from "./shared";
 
 /** Independent TS derivation of the message domain. Must agree with the on-chain value. */
 function deriveMessageDomain(programId: PublicKey, chainId: number): Buffer {
@@ -16,7 +22,7 @@ function deriveMessageDomain(programId: PublicKey, chainId: number): Buffer {
         Buffer.from("ryvo-message-domain-v1"),
         programId.toBuffer(),
         chainLe,
-      ]),
+      ])
     )
     .digest()
     .subarray(0, 16);
@@ -43,12 +49,15 @@ describe("ryvo_protocol / step 3: config and authority", () => {
       channelTimelock: number;
       initialAuthority: Keypair;
       payer: Keypair;
-    }> = {},
+    }> = {}
   ) => {
     const payer = overrides.payer ?? upgradeAuthority;
     const initialAuthority = overrides.initialAuthority ?? authority;
     return program.methods
-      .initialize(overrides.chainId ?? CHAIN_ID, new anchor.BN(overrides.channelTimelock ?? CHANNEL_TIMELOCK))
+      .initialize(
+        overrides.chainId ?? CHAIN_ID,
+        new anchor.BN(overrides.channelTimelock ?? CHANNEL_TIMELOCK)
+      )
       .accounts({
         payer: payer.publicKey,
         initialAuthority: initialAuthority.publicKey,
@@ -56,7 +65,11 @@ describe("ryvo_protocol / step 3: config and authority", () => {
         programData,
         systemProgram: SystemProgram.programId,
       })
-      .signers(payer.publicKey.equals(initialAuthority.publicKey) ? [payer] : [payer, initialAuthority]);
+      .signers(
+        payer.publicKey.equals(initialAuthority.publicKey)
+          ? [payer]
+          : [payer, initialAuthority]
+      );
   };
 
   it("rejects a caller that is not the program upgrade authority", async () => {
@@ -69,7 +82,9 @@ describe("ryvo_protocol / step 3: config and authority", () => {
       await init({ payer: stranger }).rpc();
     } catch (e) {
       failed = true;
-      expect(`${e}`).to.match(/UnauthorizedInitializer|ConstraintSeeds|not been initialized/);
+      expect(`${e}`).to.match(
+        /UnauthorizedInitializer|ConstraintSeeds|not been initialized/
+      );
     }
     expect(failed, "a stranger was able to initialize the config").to.be.true;
   });
@@ -78,6 +93,10 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     for (const [label, o] of [
       ["chain_id 4", { chainId: 4 }],
       ["channel timelock 30d+1", { channelTimelock: 30 * 24 * 60 * 60 + 1 }],
+      [
+        "mainnet channel timelock below seven days",
+        { chainId: 3, channelTimelock: 7 * 24 * 60 * 60 - 1 },
+      ],
       // zero would let request + execute fit in one transaction: no payee protection at all
       ["channel timelock 0", { channelTimelock: 0 }],
     ] as const) {
@@ -96,13 +115,15 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     const cfg = await program.account.config.fetch(configPda);
 
     expect(cfg.authority.toBase58()).to.equal(authority.publicKey.toBase58());
-    expect(cfg.pendingAuthority.toBase58()).to.equal(PublicKey.default.toBase58());
+    expect(cfg.pendingAuthority.toBase58()).to.equal(
+      PublicKey.default.toBase58()
+    );
     expect(cfg.chainId).to.equal(CHAIN_ID);
     expect(cfg.channelTimelockSeconds.toNumber()).to.equal(CHANNEL_TIMELOCK);
 
     // The whole point of deriving rather than accepting it as an argument.
     expect(Buffer.from(cfg.messageDomain)).to.deep.equal(
-      deriveMessageDomain(program.programId, CHAIN_ID),
+      deriveMessageDomain(program.programId, CHAIN_ID)
     );
   });
 
@@ -120,10 +141,16 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     // The protocol takes no cut: a payment moves numbers between ledger rows and the tokens never
     // leave the vault, so there is nothing on-chain to charge for.
     const norm = (s: string) => s.replace(/_/g, "").toLowerCase();
-    const configType = program.idl.types.find((t) => norm(t.name) === "config")!;
-    const fields = (configType.type as never as { fields: { name: string }[] }).fields;
+    const configType = program.idl.types.find(
+      (t) => norm(t.name) === "config"
+    )!;
+    const fields = (configType.type as never as { fields: { name: string }[] })
+      .fields;
     for (const f of fields) {
-      expect(norm(f.name), `Config still has a fee field: ${f.name}`).to.not.include("fee");
+      expect(
+        norm(f.name),
+        `Config still has a fee field: ${f.name}`
+      ).to.not.include("fee");
     }
     const ixNames = program.idl.instructions.map((i) => norm(i.name));
     expect(ixNames).to.not.include(norm("withdraw_protocol_fees"));
@@ -132,7 +159,7 @@ describe("ryvo_protocol / step 3: config and authority", () => {
   it("exposes no setter for chain_id, message_domain, or the timelock", () => {
     const norm = (s: string) => s.replace(/_/g, "").toLowerCase();
     const ix = program.idl.instructions.find(
-      (i) => norm(i.name) === norm("nominate_authority"),
+      (i) => norm(i.name) === norm("nominate_authority")
     );
     expect(ix, "nominate_authority missing from the IDL").to.not.be.undefined;
     // Its only argument is the successor; there is no other config mutation instruction.
@@ -143,7 +170,7 @@ describe("ryvo_protocol / step 3: config and authority", () => {
         if (norm(other.name) === norm("initialize")) continue;
         expect(
           args.includes(forbidden),
-          `${other.name} must not accept a ${forbidden} argument`,
+          `${other.name} must not accept a ${forbidden} argument`
         ).to.be.false;
       }
     }
@@ -206,7 +233,9 @@ describe("ryvo_protocol / step 3: config and authority", () => {
 
     const cfg = await program.account.config.fetch(configPda);
     expect(cfg.authority.toBase58()).to.equal(successor.publicKey.toBase58());
-    expect(cfg.pendingAuthority.toBase58()).to.equal(PublicKey.default.toBase58());
+    expect(cfg.pendingAuthority.toBase58()).to.equal(
+      PublicKey.default.toBase58()
+    );
 
     // The old authority is now powerless.
     failed = false;
@@ -236,6 +265,8 @@ describe("ryvo_protocol / step 3: config and authority", () => {
       .rpc();
 
     const restored = await program.account.config.fetch(configPda);
-    expect(restored.authority.toBase58()).to.equal(authority.publicKey.toBase58());
+    expect(restored.authority.toBase58()).to.equal(
+      authority.publicKey.toBase58()
+    );
   });
 });

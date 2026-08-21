@@ -11,6 +11,9 @@ ryvo_protocol = "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
 [programs.devnet]
 ryvo_protocol = "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
 
+[programs.mainnet]
+ryvo_protocol = "9QHMKt6ANEzaCEgzk9p1Vaex2yeLLhaLXNfEYCiGGS2Q"
+
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"

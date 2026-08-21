@@ -39,6 +39,8 @@ describe("ryvo_protocol / step 0: toolchain", () => {
       "balanceSeed",
       "messageDomainTag",
       "commitmentDigestTag",
+      "mainnetChainId",
+      "mainnetChannelTimelockSeconds",
     ]) {
       expect(names, `IDL is missing constant ${expected}`).to.include(
         normalize(expected)

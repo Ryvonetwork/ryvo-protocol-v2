@@ -53,12 +53,19 @@ pub const COMMITMENT_DIGEST_TAG: &str = "ryvo-commitment-v1";
 
 // Bounds.
 
+/// Deployment selector used for Solana mainnet.
+#[constant]
+pub const MAINNET_CHAIN_ID: u16 = 3;
+
+/// Mainnet channel unlock delay: exactly seven days.
+#[constant]
+pub const MAINNET_CHANNEL_TIMELOCK_SECONDS: i64 = 7 * 24 * 60 * 60;
+
 /// Timelock ceiling, in seconds (30 days). Applies to the channel unlock timelock, which is the
 /// protocol's only timelock and is immutable after `initialize`.
 pub const MAX_TIMELOCK_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// Timelock floor. Zero is rejected: request and execute would fit in one transaction and the
-/// payee would have no window at all. One second is the floor for test networks; a real
-/// deployment wants hours.
+/// payee would have no window at all. One second is allowed only for non-mainnet deployments.
 pub const MIN_TIMELOCK_SECONDS: i64 = 1;
 
 /// Mint decimals ceiling. Nothing sane exceeds 9.

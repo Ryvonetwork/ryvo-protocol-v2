@@ -1,4 +1,7 @@
-use crate::constants::{CONFIG_SEED, MAX_TIMELOCK_SECONDS, MIN_TIMELOCK_SECONDS};
+use crate::constants::{
+    CONFIG_SEED, MAINNET_CHAIN_ID, MAINNET_CHANNEL_TIMELOCK_SECONDS, MAX_TIMELOCK_SECONDS,
+    MIN_TIMELOCK_SECONDS,
+};
 use crate::domain::derive_message_domain;
 use crate::error::RyvoError;
 use crate::events::ConfigInitialized;
@@ -6,7 +9,7 @@ use crate::state::Config;
 use anchor_lang::prelude::*;
 
 /// Highest recognised deployment selector. `0` localnet, `1` devnet, `2` testnet, `3` mainnet.
-const MAX_CHAIN_ID: u16 = 3;
+const MAX_CHAIN_ID: u16 = MAINNET_CHAIN_ID;
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -42,6 +45,12 @@ pub struct Initialize<'info> {
     pub system_program: Program<'info, System>,
 }
 
+fn valid_channel_timelock(chain_id: u16, channel_timelock_seconds: i64) -> bool {
+    (MIN_TIMELOCK_SECONDS..=MAX_TIMELOCK_SECONDS).contains(&channel_timelock_seconds)
+        && (chain_id != MAINNET_CHAIN_ID
+            || channel_timelock_seconds == MAINNET_CHANNEL_TIMELOCK_SECONDS)
+}
+
 pub fn handler(
     ctx: Context<Initialize>,
     chain_id: u16,
@@ -52,12 +61,10 @@ pub fn handler(
         RyvoError::UnauthorizedInitializer
     );
     require!(chain_id <= MAX_CHAIN_ID, RyvoError::InvalidChainId);
-    // A zero timelock would let request + execute fit in one transaction, which is no payee
-    // protection at all; the ceiling keeps a typo from locking collateral for years. The right
-    // value for a real deployment is a safety parameter in its own right: it must exceed the
-    // worst-case clearing latency by a wide margin, and it can never be changed.
+    // Non-mainnet deployments may use short values for testing. Mainnet is fixed to seven days,
+    // making a deployment typo impossible because the value can never be changed later.
     require!(
-        (MIN_TIMELOCK_SECONDS..=MAX_TIMELOCK_SECONDS).contains(&channel_timelock_seconds),
+        valid_channel_timelock(chain_id, channel_timelock_seconds),
         RyvoError::InvalidTimelock
     );
     let initial_authority = ctx.accounts.initial_authority.key();
@@ -83,4 +90,33 @@ pub fn handler(
         channel_timelock_seconds,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mainnet_requires_exactly_seven_days() {
+        assert!(valid_channel_timelock(
+            MAINNET_CHAIN_ID,
+            MAINNET_CHANNEL_TIMELOCK_SECONDS
+        ));
+        assert!(!valid_channel_timelock(MAINNET_CHAIN_ID, 1));
+        assert!(!valid_channel_timelock(
+            MAINNET_CHAIN_ID,
+            MAINNET_CHANNEL_TIMELOCK_SECONDS - 1
+        ));
+        assert!(!valid_channel_timelock(
+            MAINNET_CHAIN_ID,
+            MAINNET_CHANNEL_TIMELOCK_SECONDS + 1
+        ));
+    }
+
+    #[test]
+    fn test_networks_allow_short_timelocks() {
+        assert!(valid_channel_timelock(0, 1));
+        assert!(valid_channel_timelock(1, 10));
+        assert!(valid_channel_timelock(2, 60));
+    }
 }
