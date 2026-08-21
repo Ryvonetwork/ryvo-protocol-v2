@@ -10,7 +10,12 @@
  * Signatures are over everything before them (unlike legacy, where they come first). The
  * compute-unit limit defaults to 0 when the mask bit is unset, so it is always set here.
  */
-import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  TransactionInstruction,
+} from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 
 export const TX_V1_MAX_BYTES = 4096;
@@ -23,14 +28,18 @@ export interface V1Options {
   priorityFeeLamports?: bigint;
 }
 
-interface AccountSlot { pubkey: PublicKey; signer: boolean; writable: boolean }
+interface AccountSlot {
+  pubkey: PublicKey;
+  signer: boolean;
+  writable: boolean;
+}
 
 /** Build the signed v1 wire bytes for `instructions` paid for and signed by `signers[0]`. */
 export function buildV1Transaction(
   instructions: TransactionInstruction[],
   signers: Keypair[],
   recentBlockhash: string,
-  opts: V1Options,
+  opts: V1Options
 ): Buffer {
   const feePayer = signers[0].publicKey;
   // Collect accounts: fee payer first, then merge metas by pubkey (signer/writable OR-ed).
@@ -38,8 +47,10 @@ export function buildV1Transaction(
   const upsert = (pubkey: PublicKey, signer: boolean, writable: boolean) => {
     const k = pubkey.toBase58();
     const cur = map.get(k);
-    if (cur) { cur.signer ||= signer; cur.writable ||= writable; }
-    else map.set(k, { pubkey, signer, writable });
+    if (cur) {
+      cur.signer ||= signer;
+      cur.writable ||= writable;
+    } else map.set(k, { pubkey, signer, writable });
   };
   upsert(feePayer, true, true);
   for (const ix of instructions) {
@@ -47,34 +58,52 @@ export function buildV1Transaction(
     upsert(ix.programId, false, false);
   }
   const all = [...map.values()];
-  const signedW = all.filter((a) => a.signer && a.writable && !a.pubkey.equals(feePayer));
+  const signedW = all.filter(
+    (a) => a.signer && a.writable && !a.pubkey.equals(feePayer)
+  );
   const signedR = all.filter((a) => a.signer && !a.writable);
   const unsignedW = all.filter((a) => !a.signer && a.writable);
   const unsignedR = all.filter((a) => !a.signer && !a.writable);
-  const ordered = [map.get(feePayer.toBase58())!, ...signedW, ...signedR, ...unsignedW, ...unsignedR];
+  const ordered = [
+    map.get(feePayer.toBase58())!,
+    ...signedW,
+    ...signedR,
+    ...unsignedW,
+    ...unsignedR,
+  ];
   const index = new Map(ordered.map((a, i) => [a.pubkey.toBase58(), i]));
   const numRequiredSignatures = 1 + signedW.length + signedR.length;
   if (numRequiredSignatures > 12) throw new Error("v1: at most 12 signatures");
-  if (ordered.length > 64) throw new Error(`v1: at most 64 accounts, got ${ordered.length}`);
+  if (ordered.length > 64)
+    throw new Error(`v1: at most 64 accounts, got ${ordered.length}`);
   if (instructions.length > 64) throw new Error("v1: at most 64 instructions");
 
   const parts: Buffer[] = [];
   parts.push(Buffer.from([VERSION_BYTE]));
-  parts.push(Buffer.from([numRequiredSignatures, signedR.length, unsignedR.length]));
+  parts.push(
+    Buffer.from([numRequiredSignatures, signedR.length, unsignedR.length])
+  );
   let mask = MASK_CU_LIMIT;
   const configValues: Buffer[] = [];
   if (opts.priorityFeeLamports && opts.priorityFeeLamports > 0n) {
     mask |= MASK_PRIORITY_FEE;
-    const b = Buffer.alloc(8); b.writeBigUInt64LE(opts.priorityFeeLamports); configValues.push(b);
+    const b = Buffer.alloc(8);
+    b.writeBigUInt64LE(opts.priorityFeeLamports);
+    configValues.push(b);
   }
-  const cu = Buffer.alloc(4); cu.writeUInt32LE(opts.computeUnitLimit); configValues.push(cu);
-  const maskB = Buffer.alloc(4); maskB.writeUInt32LE(mask); parts.push(maskB);
+  const cu = Buffer.alloc(4);
+  cu.writeUInt32LE(opts.computeUnitLimit);
+  configValues.push(cu);
+  const maskB = Buffer.alloc(4);
+  maskB.writeUInt32LE(mask);
+  parts.push(maskB);
   parts.push(Buffer.from(bs58decode(recentBlockhash)));
   parts.push(Buffer.from([instructions.length, ordered.length]));
   for (const a of ordered) parts.push(a.pubkey.toBuffer());
   parts.push(...configValues);
   for (const ix of instructions) {
-    if (ix.data.length > 0xffff) throw new Error("v1: instruction data too long");
+    if (ix.data.length > 0xffff)
+      throw new Error("v1: instruction data too long");
     const h = Buffer.alloc(4);
     h[0] = index.get(ix.programId.toBase58())!;
     h[1] = ix.keys.length;
@@ -82,7 +111,9 @@ export function buildV1Transaction(
     parts.push(h);
   }
   for (const ix of instructions) {
-    parts.push(Buffer.from(ix.keys.map((m) => index.get(m.pubkey.toBase58())!)));
+    parts.push(
+      Buffer.from(ix.keys.map((m) => index.get(m.pubkey.toBase58())!))
+    );
     parts.push(Buffer.from(ix.data));
   }
   const message = Buffer.concat(parts);
@@ -94,7 +125,8 @@ export function buildV1Transaction(
     sigs.push(Buffer.from(ed25519.sign(message, kp.secretKey.slice(0, 32))));
   }
   const wire = Buffer.concat([message, ...sigs]);
-  if (wire.length > TX_V1_MAX_BYTES) throw new Error(`v1: ${wire.length} bytes exceeds ${TX_V1_MAX_BYTES}`);
+  if (wire.length > TX_V1_MAX_BYTES)
+    throw new Error(`v1: ${wire.length} bytes exceeds ${TX_V1_MAX_BYTES}`);
   return wire;
 }
 
@@ -102,12 +134,19 @@ export async function sendV1(
   connection: Connection,
   instructions: TransactionInstruction[],
   signers: Keypair[],
-  opts: V1Options,
+  opts: V1Options
 ): Promise<{ signature: string; bytes: number }> {
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } =
+    await connection.getLatestBlockhash("confirmed");
   const wire = buildV1Transaction(instructions, signers, blockhash, opts);
-  const signature = await connection.sendRawTransaction(wire, { skipPreflight: !!process.env.V1_SKIP_PREFLIGHT, maxRetries: 5 });
-  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+  const signature = await connection.sendRawTransaction(wire, {
+    skipPreflight: !!process.env.V1_SKIP_PREFLIGHT,
+    maxRetries: 5,
+  });
+  await connection.confirmTransaction(
+    { signature, blockhash, lastValidBlockHeight },
+    "confirmed"
+  );
   return { signature, bytes: wire.length };
 }
 
@@ -121,9 +160,16 @@ function bs58decode(s: string): Uint8Array {
     n = n * 58n + BigInt(v);
   }
   const out: number[] = [];
-  while (n > 0n) { out.push(Number(n & 0xffn)); n >>= 8n; }
-  for (const ch of s) { if (ch === "1") out.push(0); else break; }
+  while (n > 0n) {
+    out.push(Number(n & 0xffn));
+    n >>= 8n;
+  }
+  for (const ch of s) {
+    if (ch === "1") out.push(0);
+    else break;
+  }
   const bytes = Uint8Array.from(out.reverse());
-  if (bytes.length !== 32) throw new Error(`blockhash decodes to ${bytes.length} bytes`);
+  if (bytes.length !== 32)
+    throw new Error(`blockhash decodes to ${bytes.length} bytes`);
   return bytes;
 }

@@ -17,6 +17,7 @@ no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "arcium-anchor/idl-build"]
 anchor-debug = []
 custom-panic = []
+custom-heap = []
 
 [dependencies]
 # NOTE: `init-if-needed` is deliberately NOT enabled. Every account is created by an

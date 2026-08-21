@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: arcium-hq/setup-arcium@v0.14.1
+        with:
+          runner-arch-os: x86_64_linux
+          arcium-version: "0.14.1"
+          anchor-version: "1.0.2"
+          solana-cli-version: "3.1.10"
+          node-version: "24.10.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Build
+        run: arcium build
+
+      - name: TypeScript and formatting
+        run: npm run check
+
+      - name: Rust lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace --all-targets
+
+      - name: Dependency audit
+        run: npm run audit:deps
+
+      - name: Custody and finalization tests
+        run: npm test
+
+      - name: Full Arcium tests
+        run: |
+          sudo prlimit --pid $$ --nofile=1048576:1048576
+          RYVO_UPLOAD_CIRCUITS=1 arcium test --skip-build

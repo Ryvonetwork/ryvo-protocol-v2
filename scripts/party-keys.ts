@@ -13,15 +13,27 @@ import * as os from "os";
 
 export const RUNS_FILE = `${os.homedir()}/.ryvo-devnet-runs.json`;
 
-export interface RunRecord { nonce: number; parties: number; startedAt: string; note?: string }
+export interface RunRecord {
+  nonce: number;
+  parties: number;
+  startedAt: string;
+  note?: string;
+}
 
-export function partyKeypair(wallet: Keypair, nonce: number, index: number): Keypair {
+export function partyKeypair(
+  wallet: Keypair,
+  nonce: number,
+  index: number
+): Keypair {
   const h = createHash("sha256");
   h.update("ryvo-devnet-party");
   h.update(wallet.secretKey.subarray(0, 32));
-  const n = Buffer.alloc(8); n.writeBigUInt64LE(BigInt(nonce));
-  const i = Buffer.alloc(4); i.writeUInt32LE(index);
-  h.update(n); h.update(i);
+  const n = Buffer.alloc(8);
+  n.writeBigUInt64LE(BigInt(nonce));
+  const i = Buffer.alloc(4);
+  i.writeUInt32LE(index);
+  h.update(n);
+  h.update(i);
   return Keypair.fromSeed(h.digest());
 }
 
@@ -32,5 +44,9 @@ export function recordRun(rec: RunRecord) {
 }
 
 export function readRuns(): RunRecord[] {
-  try { return JSON.parse(fs.readFileSync(RUNS_FILE, "utf8")); } catch { return []; }
+  try {
+    return JSON.parse(fs.readFileSync(RUNS_FILE, "utf8"));
+  } catch {
+    return [];
+  }
 }

@@ -61,7 +61,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     );
     await program.methods
       .initializeParticipant(signer)
-      .accounts({
+      .accountsPartial({
         owner: owner.publicKey,
         config: configPda,
         participant,
@@ -73,7 +73,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     const balance = seeds.balance(program.programId, participant, mint);
     await program.methods
       .openBalance()
-      .accounts({
+      .accountsPartial({
         payer: owner.publicKey,
         participant,
         mint,
@@ -106,7 +106,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
       );
       await program.methods
         .deposit(new anchor.BN(deposit))
-        .accounts({
+        .accountsPartial({
           funder: owner.publicKey,
           mint,
           tokenConfig,
@@ -132,7 +132,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     );
     return program.methods
       .initializeChannelBucket(kind)
-      .accounts({
+      .accountsPartial({
         payeeOwner: recipient.owner.publicKey,
         config: configPda,
         payeeParticipant: recipient.participant,
@@ -162,7 +162,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
   ) =>
     program.methods
       .createChannel(channelSlot)
-      .accounts({
+      .accountsPartial({
         payerOwner: from.owner.publicKey,
         payeeOwner: to.owner.publicKey,
         payerParticipant: from.participant,
@@ -230,7 +230,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     vault = seeds.vault(program.programId, mint);
     await program.methods
       .registerToken()
-      .accounts({
+      .accountsPartial({
         authority: authority.publicKey,
         config: configPda,
         mint,
@@ -285,7 +285,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .createChannel(slot)
-        .accounts({
+        .accountsPartial({
           payerOwner: payer.owner.publicKey,
           payeeOwner: payee.owner.publicKey,
           payerParticipant: payer.participant,
@@ -325,7 +325,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .lockChannelFunds(slot, new anchor.BN(1))
-        .accounts(payerOp(secondPayer))
+        .accountsPartial(payerOp(secondPayer))
         .signers([secondPayer.owner])
         .rpc(),
       /InvalidChannelSlot/
@@ -342,7 +342,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     );
     await program.methods
       .lockChannelFunds(slot, new anchor.BN(40 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
 
@@ -374,7 +374,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .withdraw(new anchor.BN(balance.available.toNumber() + 1))
-        .accounts({
+        .accountsPartial({
           owner: payer.owner.publicKey,
           participant: payer.participant,
           mint,
@@ -395,7 +395,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .lockChannelFunds(slot, new anchor.BN(balance.available.toNumber() + 1))
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /InsufficientBalance/
@@ -403,7 +403,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .requestUnlockChannelFunds(slot, new anchor.BN(1000 * ONE))
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /InsufficientLockedBalance/
@@ -413,7 +413,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
   it("enforces the timelock and pushes the deadline out on re-request", async () => {
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(10 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     const first = await state();
@@ -422,7 +422,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .executeUnlockChannelFunds(slot)
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /ChannelUnlockLocked/
@@ -431,7 +431,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await sleep(1200);
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(15 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     const second = await state();
@@ -446,7 +446,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .executeUnlockChannelFunds(slot)
-        .accounts({ ...payerOp(payer), payerOwner: stranger.publicKey })
+        .accountsPartial({ ...payerOp(payer), payerOwner: stranger.publicKey })
         .signers([stranger])
         .rpc()
     );
@@ -454,7 +454,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     const before = await program.account.balance.fetch(payer.balance);
     await program.methods
       .executeUnlockChannelFunds(slot)
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     const after = await program.account.balance.fetch(payer.balance);
@@ -468,7 +468,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .executeUnlockChannelFunds(slot)
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /NoChannelUnlockPending/
@@ -479,20 +479,20 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
   it("cancels a matured request when more funds are locked", async () => {
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(5 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     await sleep((CHANNEL_TIMELOCK + 1) * 1000);
     await program.methods
       .lockChannelFunds(slot, new anchor.BN(ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     expect((await state()).pending).to.equal(0);
     await expectReject(
       program.methods
         .executeUnlockChannelFunds(slot)
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /NoChannelUnlockPending/
@@ -500,20 +500,20 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
 
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(5 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     await expectReject(
       program.methods
         .executeUnlockChannelFunds(slot)
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /ChannelUnlockLocked/
     );
     await program.methods
       .cooperativeUnlockChannelFunds(slot, new anchor.BN(ONE))
-      .accounts({
+      .accountsPartial({
         payerOwner: payer.owner.publicKey,
         payeeOwner: payee.owner.publicKey,
         payerParticipant: payer.participant,
@@ -530,7 +530,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
   it("lets only the payer cancel an unlock without adding funds", async () => {
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(5 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
 
@@ -539,7 +539,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .cancelUnlockChannelFunds(slot)
-        .accounts({ ...payerOp(payer), payerOwner: stranger.publicKey })
+        .accountsPartial({ ...payerOp(payer), payerOwner: stranger.publicKey })
         .signers([stranger])
         .rpc()
     );
@@ -547,7 +547,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     const before = await state();
     await program.methods
       .cancelUnlockChannelFunds(slot)
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     const after = await state();
@@ -557,7 +557,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .executeUnlockChannelFunds(slot)
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /NoChannelUnlockPending/
@@ -565,7 +565,7 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
     await expectReject(
       program.methods
         .cancelUnlockChannelFunds(slot)
-        .accounts(payerOp(payer))
+        .accountsPartial(payerOp(payer))
         .signers([payer.owner])
         .rpc(),
       /NoChannelUnlockPending/
@@ -576,12 +576,12 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
   it("cooperative release supersedes a pending request", async () => {
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(25 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     await program.methods
       .cooperativeUnlockChannelFunds(slot, new anchor.BN(20 * ONE))
-      .accounts({
+      .accountsPartial({
         payerOwner: payer.owner.publicKey,
         payeeOwner: payee.owner.publicKey,
         payerParticipant: payer.participant,
@@ -597,13 +597,13 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
 
     await program.methods
       .requestUnlockChannelFunds(slot, new anchor.BN(5 * ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     await sleep((CHANNEL_TIMELOCK + 1) * 1000);
     await program.methods
       .executeUnlockChannelFunds(slot)
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     channel = await state();
@@ -614,13 +614,13 @@ describe("ryvo_protocol / step 7: channel buckets, lock, unlock", () => {
   it("requires both signatures for cooperative unlock", async () => {
     await program.methods
       .lockChannelFunds(slot, new anchor.BN(ONE))
-      .accounts(payerOp(payer))
+      .accountsPartial(payerOp(payer))
       .signers([payer.owner])
       .rpc();
     await expectReject(
       program.methods
         .cooperativeUnlockChannelFunds(slot, new anchor.BN(ONE))
-        .accounts({
+        .accountsPartial({
           payerOwner: payer.owner.publicKey,
           payeeOwner: payee.owner.publicKey,
           payerParticipant: payer.participant,

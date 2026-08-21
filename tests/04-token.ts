@@ -1,6 +1,11 @@
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
-import { Keypair, PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  SYSVAR_RENT_PUBKEY,
+} from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
@@ -34,10 +39,14 @@ describe("ryvo_protocol / step 4: token registration and vault", () => {
     mint = await newMint(provider, 6);
   });
 
-  const register = (m: PublicKey, who = authority, tokenProgram = TOKEN_PROGRAM_ID) =>
+  const register = (
+    m: PublicKey,
+    who = authority,
+    tokenProgram = TOKEN_PROGRAM_ID
+  ) =>
     program.methods
       .registerToken()
-      .accounts({
+      .accountsPartial({
         authority: who.publicKey,
         config: configPda,
         mint: m,
@@ -53,28 +62,28 @@ describe("ryvo_protocol / step 4: token registration and vault", () => {
     await register(mint).rpc();
 
     const tc = await program.account.tokenConfig.fetch(
-      seeds.tokenConfig(program.programId, mint),
+      seeds.tokenConfig(program.programId, mint)
     );
     expect(tc.mint.toBase58()).to.equal(mint.toBase58());
     expect(tc.vault.toBase58()).to.equal(
-      seeds.vault(program.programId, mint).toBase58(),
+      seeds.vault(program.programId, mint).toBase58()
     );
     expect(tc.decimals).to.equal(6);
     expect(tc.depositsEnabled).to.be.true;
 
     // The vault must be owned by the per-mint token config, not the global config.
     const vault = await provider.connection.getTokenAccountBalance(
-      seeds.vault(program.programId, mint),
+      seeds.vault(program.programId, mint)
     );
     expect(vault.value.amount).to.equal("0");
 
     const raw = await provider.connection.getParsedAccountInfo(
-      seeds.vault(program.programId, mint),
+      seeds.vault(program.programId, mint)
     );
     const info = (raw.value?.data as any).parsed.info;
     expect(info.mint).to.equal(mint.toBase58());
     expect(info.owner).to.equal(
-      seeds.tokenConfig(program.programId, mint).toBase58(),
+      seeds.tokenConfig(program.programId, mint).toBase58()
     );
   });
 
@@ -105,7 +114,7 @@ describe("ryvo_protocol / step 4: token registration and vault", () => {
       6,
       undefined,
       { commitment: "confirmed" },
-      TOKEN_2022_PROGRAM_ID,
+      TOKEN_2022_PROGRAM_ID
     );
     await expectReject(register(t22, authority, TOKEN_2022_PROGRAM_ID).rpc());
     // ...and also when the caller lies about the token program.
@@ -118,7 +127,11 @@ describe("ryvo_protocol / step 4: token registration and vault", () => {
 
     await program.methods
       .setTokenDepositEnabled(false)
-      .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
+      .accountsPartial({
+        authority: authority.publicKey,
+        config: configPda,
+        tokenConfig,
+      })
       .signers([authority])
       .rpc();
 
@@ -130,11 +143,14 @@ describe("ryvo_protocol / step 4: token registration and vault", () => {
 
     await program.methods
       .setTokenDepositEnabled(true)
-      .accounts({ authority: authority.publicKey, config: configPda, tokenConfig })
+      .accountsPartial({
+        authority: authority.publicKey,
+        config: configPda,
+        tokenConfig,
+      })
       .signers([authority])
       .rpc();
     tc = await program.account.tokenConfig.fetch(tokenConfig);
     expect(tc.depositsEnabled).to.be.true;
   });
-
 });

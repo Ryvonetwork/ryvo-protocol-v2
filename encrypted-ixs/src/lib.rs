@@ -1,3 +1,9 @@
+#![allow(
+    clippy::manual_memcpy,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)] // Arcis requires fixed-index loops and the circuit's fixed argument list.
+
 //! Ryvo clearing circuits.
 //!
 //! Each circuit takes one batch of staged commitment records and returns one bit per record:

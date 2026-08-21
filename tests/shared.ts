@@ -128,7 +128,7 @@ export async function ensureConfig(
   const upgradeAuthority = localWallet();
   await program.methods
     .initialize(CHAIN_ID, new anchor.BN(CHANNEL_TIMELOCK))
-    .accounts({
+    .accountsPartial({
       payer: upgradeAuthority.publicKey,
       initialAuthority: authority.publicKey,
       config: configPda,

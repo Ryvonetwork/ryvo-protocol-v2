@@ -386,7 +386,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       vaults.set(m.toBase58(), v);
       await program.methods
         .registerToken()
-        .accounts({
+        .accountsPartial({
           authority: authority.publicKey,
           config: configPda,
           mint: m,
@@ -416,7 +416,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
       );
       await program.methods
         .initializeParticipant(signer)
-        .accounts({
+        .accountsPartial({
           owner: owner.publicKey,
           config: configPda,
           participant,
@@ -431,7 +431,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         const bal = seeds.balance(program.programId, participant, m);
         await program.methods
           .openBalance()
-          .accounts({
+          .accountsPartial({
             payer: owner.publicKey,
             participant,
             mint: m,
@@ -486,7 +486,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           );
         await program.methods
           .initializeChannelBucket(CHANNEL_KIND_DIRECT)
-          .accounts({
+          .accountsPartial({
             payeeOwner: to.owner.publicKey,
             config: configPda,
             payeeParticipant: to.participant,
@@ -508,7 +508,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           .rpc();
         await program.methods
           .createChannel(0)
-          .accounts({
+          .accountsPartial({
             payerOwner: from.owner.publicKey,
             payeeOwner: to.owner.publicKey,
             payerParticipant: from.participant,
@@ -572,7 +572,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
         if (op === 0) {
           await program.methods
             .deposit(new anchor.BN((1 + rand(20)) * ONE))
-            .accounts({
+            .accountsPartial({
               funder: p.owner.publicKey,
               mint: m,
               tokenConfig: tokenConfigs.get(mk)!,
@@ -597,7 +597,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           if (amt === 0) continue;
           await program.methods
             .lockChannelFunds(ch.slot, new anchor.BN(amt * ONE))
-            .accounts({
+            .accountsPartial({
               payerOwner: p.owner.publicKey,
               payerParticipant: p.participant,
               config: configPda,
@@ -619,7 +619,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
               ch.slot,
               new anchor.BN(locked.toString())
             )
-            .accounts({
+            .accountsPartial({
               payerOwner: p.owner.publicKey,
               payerParticipant: p.participant,
               config: configPda,
@@ -633,7 +633,7 @@ describe("ryvo_protocol / step 8: conformance and solvency", () => {
           if (Number(b.available) === 0) continue;
           await program.methods
             .withdraw(new anchor.BN(1 + rand(Number(b.available))))
-            .accounts({
+            .accountsPartial({
               owner: p.owner.publicKey,
               participant: p.participant,
               mint: m,

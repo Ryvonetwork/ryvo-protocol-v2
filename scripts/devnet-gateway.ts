@@ -254,7 +254,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     if (!(await connection.getAccountInfo(pda.config))) {
       await program.methods
         .initialize(DEVNET_CHAIN_ID, new anchor.BN(CHANNEL_TIMELOCK))
-        .accounts({
+        .accountsPartial({
           payer: payer.publicKey,
           initialAuthority: payer.publicKey,
           config: pda.config,
@@ -313,7 +313,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     vault = pda.vault(mint);
     await program.methods
       .registerToken()
-      .accounts({
+      .accountsPartial({
         authority: payer.publicKey,
         config: pda.config,
         mint,
@@ -363,7 +363,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const ixs: TransactionInstruction[] = [
         await program.methods
           .initializeParticipant(new PublicKey(p.signer))
-          .accounts({
+          .accountsPartial({
             owner: p.owner.publicKey,
             config: pda.config,
             participant: p.participant,
@@ -372,7 +372,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
           .instruction(),
         await program.methods
           .openBalance()
-          .accounts({
+          .accountsPartial({
             payer: p.owner.publicKey,
             participant: p.participant,
             mint,
@@ -409,7 +409,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
     );
     await program.methods
       .initializeChannelBucket(CHANNEL_KIND_ROUTED)
-      .accounts({
+      .accountsPartial({
         payeeOwner: gateway.owner.publicKey,
         config: pda.config,
         payeeParticipant: gateway.participant,
@@ -439,7 +439,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       const tx = new anchor.web3.Transaction().add(
         await program.methods
           .createChannel(slot)
-          .accounts({
+          .accountsPartial({
             payerOwner: from.owner.publicKey,
             payeeOwner: gateway.owner.publicKey,
             payerParticipant: from.participant,
@@ -502,7 +502,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
         ),
         await program.methods
           .deposit(new anchor.BN(AGENT_DEPOSIT))
-          .accounts({
+          .accountsPartial({
             funder: a.owner.publicKey,
             mint,
             tokenConfig,
@@ -515,7 +515,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
           .instruction(),
         await program.methods
           .lockChannelFunds(chanAG[i].slot, new anchor.BN(AGENT_LOCK))
-          .accounts({
+          .accountsPartial({
             payerOwner: a.owner.publicKey,
             payerParticipant: a.participant,
             config: pda.config,
@@ -840,7 +840,7 @@ describe("ryvo_protocol devnet gateway smoke", function () {
       : [];
     await program.methods
       .closeStaging()
-      .accounts({
+      .accountsPartial({
         relayer: payer.publicKey,
         staging,
         clearingResult: clearingPda(program.programId, staging),

@@ -58,7 +58,7 @@ describe("ryvo_protocol / step 3: config and authority", () => {
         overrides.chainId ?? CHAIN_ID,
         new anchor.BN(overrides.channelTimelock ?? CHANNEL_TIMELOCK)
       )
-      .accounts({
+      .accountsPartial({
         payer: payer.publicKey,
         initialAuthority: initialAuthority.publicKey,
         config: configPda,
@@ -181,7 +181,7 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     try {
       await program.methods
         .nominateAuthority(successor.publicKey)
-        .accounts({ authority: successor.publicKey, config: configPda })
+        .accountsPartial({ authority: successor.publicKey, config: configPda })
         .signers([successor])
         .rpc();
     } catch {
@@ -195,7 +195,10 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     try {
       await program.methods
         .acceptConfigAuthority()
-        .accounts({ pendingAuthority: successor.publicKey, config: configPda })
+        .accountsPartial({
+          pendingAuthority: successor.publicKey,
+          config: configPda,
+        })
         .signers([successor])
         .rpc();
     } catch (e) {
@@ -206,7 +209,7 @@ describe("ryvo_protocol / step 3: config and authority", () => {
 
     await program.methods
       .nominateAuthority(successor.publicKey)
-      .accounts({ authority: authority.publicKey, config: configPda })
+      .accountsPartial({ authority: authority.publicKey, config: configPda })
       .signers([authority])
       .rpc();
 
@@ -216,7 +219,10 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     try {
       await program.methods
         .acceptConfigAuthority()
-        .accounts({ pendingAuthority: wrong.publicKey, config: configPda })
+        .accountsPartial({
+          pendingAuthority: wrong.publicKey,
+          config: configPda,
+        })
         .signers([wrong])
         .rpc();
     } catch (e) {
@@ -227,7 +233,10 @@ describe("ryvo_protocol / step 3: config and authority", () => {
 
     await program.methods
       .acceptConfigAuthority()
-      .accounts({ pendingAuthority: successor.publicKey, config: configPda })
+      .accountsPartial({
+        pendingAuthority: successor.publicKey,
+        config: configPda,
+      })
       .signers([successor])
       .rpc();
 
@@ -242,7 +251,7 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     try {
       await program.methods
         .nominateAuthority(authority.publicKey)
-        .accounts({ authority: authority.publicKey, config: configPda })
+        .accountsPartial({ authority: authority.publicKey, config: configPda })
         .signers([authority])
         .rpc();
     } catch {
@@ -255,12 +264,15 @@ describe("ryvo_protocol / step 3: config and authority", () => {
     await fund(provider, successor.publicKey, 2);
     await program.methods
       .nominateAuthority(authority.publicKey)
-      .accounts({ authority: successor.publicKey, config: configPda })
+      .accountsPartial({ authority: successor.publicKey, config: configPda })
       .signers([successor])
       .rpc();
     await program.methods
       .acceptConfigAuthority()
-      .accounts({ pendingAuthority: authority.publicKey, config: configPda })
+      .accountsPartial({
+        pendingAuthority: authority.publicKey,
+        config: configPda,
+      })
       .signers([authority])
       .rpc();
 

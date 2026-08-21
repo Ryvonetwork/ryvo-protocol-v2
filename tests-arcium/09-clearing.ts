@@ -110,7 +110,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const signer = deriveArcisSigner(seed).publicKey;
     await program.methods
       .initializeParticipant(signerOverride ?? new PublicKey(signer))
-      .accounts({
+      .accountsPartial({
         owner: owner.publicKey,
         config: configPda,
         participant,
@@ -124,7 +124,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const balance = seeds.balance(program.programId, participant, mint);
     await program.methods
       .openBalance()
-      .accounts({
+      .accountsPartial({
         payer: owner.publicKey,
         participant,
         mint,
@@ -156,7 +156,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       );
       await program.methods
         .deposit(new anchor.BN(deposit))
-        .accounts({
+        .accountsPartial({
           funder: owner.publicKey,
           mint,
           tokenConfig,
@@ -193,7 +193,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
       );
       await program.methods
         .initializeChannelBucket(kind)
-        .accounts({
+        .accountsPartial({
           payeeOwner: to.owner.publicKey,
           config: configPda,
           payeeParticipant: to.participant,
@@ -226,7 +226,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const slot = channelBucket.nextSlot++;
     await program.methods
       .createChannel(slot)
-      .accounts({
+      .accountsPartial({
         payerOwner: from.owner.publicKey,
         payeeOwner: to.owner.publicKey,
         payerParticipant: from.participant,
@@ -249,7 +249,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
   async function lock(channel: Chan, amount: number) {
     await program.methods
       .lockChannelFunds(channel.slot, new anchor.BN(amount))
-      .accounts({
+      .accountsPartial({
         payerOwner: channel.payer.owner.publicKey,
         payerParticipant: channel.payer.participant,
         config: configPda,
@@ -391,7 +391,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     vault = seeds.vault(program.programId, mint);
     await program.methods
       .registerToken()
-      .accounts({
+      .accountsPartial({
         authority: authority.publicKey,
         config: configPda,
         mint,
@@ -463,7 +463,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await expectReject(
       program.methods
         .createChannel(routedAG.slot)
-        .accounts({
+        .accountsPartial({
           payerOwner: routedAgent.owner.publicKey,
           payeeOwner: gateway.owner.publicKey,
           payerParticipant: routedAgent.participant,
@@ -479,7 +479,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await expectReject(
       program.methods
         .lockChannelFunds(routedAG.slot, new anchor.BN(ONE))
-        .accounts({
+        .accountsPartial({
           payerOwner: directAgents[0].owner.publicKey,
           payerParticipant: directAgents[0].participant,
           config: configPda,
@@ -624,7 +624,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     ]);
     await program.methods
       .requestUnlockChannelFunds(routedAG.slot, new anchor.BN(20 * ONE))
-      .accounts({
+      .accountsPartial({
         payerOwner: routedAgent.owner.publicKey,
         payerParticipant: routedAgent.participant,
         config: configPda,
@@ -718,7 +718,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     ]);
     await program.methods
       .requestUnlockChannelFunds(source.slot, new anchor.BN(10 * ONE))
-      .accounts({
+      .accountsPartial({
         payerOwner: agent.owner.publicKey,
         payerParticipant: agent.participant,
         config: configPda,
@@ -730,7 +730,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     await program.methods
       .executeUnlockChannelFunds(source.slot)
-      .accounts({
+      .accountsPartial({
         payerOwner: agent.owner.publicKey,
         payerParticipant: agent.participant,
         config: configPda,
@@ -770,7 +770,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     await lock(source, 5 * ONE);
     await program.methods
       .cooperativeUnlockChannelFunds(source.slot, new anchor.BN(3 * ONE))
-      .accounts({
+      .accountsPartial({
         payerOwner: agent.owner.publicKey,
         payeeOwner: gateway.owner.publicKey,
         payerParticipant: agent.participant,
@@ -898,7 +898,7 @@ describe("ryvo_protocol / step 9: Arcium clearing", () => {
     const before = await available(routedAgent);
     await program.methods
       .executeUnlockChannelFunds(routedAG.slot)
-      .accounts({
+      .accountsPartial({
         payerOwner: routedAgent.owner.publicKey,
         payerParticipant: routedAgent.participant,
         config: configPda,

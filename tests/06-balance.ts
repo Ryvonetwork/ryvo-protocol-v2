@@ -49,7 +49,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     vault = seeds.vault(program.programId, mint);
     await program.methods
       .registerToken()
-      .accounts({
+      .accountsPartial({
         authority: authority.publicKey,
         config: configPda,
         mint,
@@ -70,7 +70,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     );
     await program.methods
       .initializeParticipant(signer)
-      .accounts({
+      .accountsPartial({
         owner: owner.publicKey,
         config: configPda,
         participant,
@@ -82,7 +82,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     balance = seeds.balance(program.programId, participant, mint);
     await program.methods
       .openBalance()
-      .accounts({
+      .accountsPartial({
         payer: owner.publicKey,
         participant,
         mint,
@@ -143,7 +143,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
   const deposit = (amount: number, funder = owner, funderAta = ownerAta) =>
     program.methods
       .deposit(new anchor.BN(amount))
-      .accounts({
+      .accountsPartial({
         funder: funder.publicKey,
         mint,
         tokenConfig,
@@ -158,9 +158,8 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
   const withdraw = (amount: number, destination = ownerAta, who = owner) =>
     program.methods
       .withdraw(new anchor.BN(amount))
-      .accounts({
+      .accountsPartial({
         owner: who.publicKey,
-        config: configPda,
         participant,
         mint,
         tokenConfig,
@@ -183,7 +182,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
 
     await program.methods
       .setTokenDepositEnabled(false)
-      .accounts({
+      .accountsPartial({
         authority: authority.publicKey,
         config: configPda,
         tokenConfig,
@@ -193,7 +192,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     await expectReject(deposit(ONE).rpc(), /TokenDepositsDisabled/);
     await program.methods
       .setTokenDepositEnabled(true)
-      .accounts({
+      .accountsPartial({
         authority: authority.publicKey,
         config: configPda,
         tokenConfig,
@@ -303,7 +302,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
     // could strand user funds.
     await program.methods
       .setTokenDepositEnabled(false)
-      .accounts({
+      .accountsPartial({
         authority: authority.publicKey,
         config: configPda,
         tokenConfig,
@@ -316,7 +315,7 @@ describe("ryvo_protocol / step 6: balances and withdrawals", () => {
 
     await program.methods
       .setTokenDepositEnabled(true)
-      .accounts({
+      .accountsPartial({
         authority: authority.publicKey,
         config: configPda,
         tokenConfig,

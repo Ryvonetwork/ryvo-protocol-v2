@@ -294,7 +294,7 @@ export async function openStaging(
     );
   await program.methods
     .openStaging(kind)
-    .accounts({
+    .accountsPartial({
       relayer: relayer.publicKey,
       staging,
       clearingResult: clearingPda(program.programId, staging),
@@ -360,11 +360,8 @@ async function planStaging(
 ): Promise<StagingPlan> {
   // Built by hand: Anchor's instruction encoder caps data at 1,000 bytes, and a v1 chunk is bigger.
   const disc = Buffer.from(
-    (
-      program.idl.instructions.find(
-        (i) => i.name === "stage_records" || i.name === "stageRecords"
-      ) as any
-    ).discriminator
+    (program.idl.instructions.find((i) => i.name === "stageRecords") as any)
+      .discriminator
   );
   const stageIx = async (start: number, recs: Batch["records"]) => {
     const body = Buffer.concat(recs.map((r) => r.data));
@@ -396,7 +393,7 @@ async function planStaging(
     ? undefined
     : await program.methods
         .resetStaging(batch.kind)
-        .accounts({
+        .accountsPartial({
           relayer: relayer.publicKey,
           staging,
           clearingResult: clearingPda(program.programId, staging),
@@ -672,7 +669,7 @@ export async function settlementInstruction(
         providerBalanceAccounts: Buffer.from(group.providerBalanceAccounts),
       }))
     )
-    .accounts({
+    .accountsPartial({
       staging,
       clearingResult: clearingPda(program.programId, staging),
     })
@@ -761,7 +758,7 @@ export async function closeStaging(
 ): Promise<string> {
   return program.methods
     .closeStaging()
-    .accounts({
+    .accountsPartial({
       relayer: relayer.publicKey,
       staging,
       clearingResult: clearingPda(program.programId, staging),
@@ -784,7 +781,7 @@ export async function ensureArciumSigner(
   if (info) return signPda;
   await program.methods
     .initArciumSigner()
-    .accounts({
+    .accountsPartial({
       payer: payer.publicKey,
       signPdaAccount: signPda,
       systemProgram: SystemProgram.programId,
@@ -824,7 +821,7 @@ export async function ensureCompDef(
       ? program.methods.initClearUnilateralCompDef(offchainUrl ?? null)
       : program.methods.initClearRouteCompDef(offchainUrl ?? null);
   await m
-    .accounts({
+    .accountsPartial({
       compDefAccount: compDef,
       payer: payer.publicKey,
       mxeAccount,

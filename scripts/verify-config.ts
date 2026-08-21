@@ -7,6 +7,11 @@ const CONFIG_DISCRIMINATOR = createHash("sha256")
   .digest()
   .subarray(0, 8);
 const DEFAULT_PUBKEY = new PublicKey(new Uint8Array(32));
+const KNOWN_GENESIS_HASHES: Readonly<Partial<Record<number, string>>> = {
+  1: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  2: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
+  3: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+};
 
 function required(name: string): string {
   const value = process.env[name];
@@ -45,6 +50,12 @@ async function main() {
     30 * 24 * 60 * 60
   );
   const connection = new Connection(rpcUrl, "confirmed");
+
+  const expectedGenesisHash = KNOWN_GENESIS_HASHES[expectedChainId];
+  if (expectedGenesisHash) {
+    const genesisHash = await connection.getGenesisHash();
+    equal(genesisHash, expectedGenesisHash, "RPC genesis hash");
+  }
 
   const program = await connection.getAccountInfo(programId, "confirmed");
   if (!program?.executable) {

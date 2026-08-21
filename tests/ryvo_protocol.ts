@@ -49,8 +49,11 @@ describe("ryvo_protocol / step 0: toolchain", () => {
   });
 
   it("exports stable Direct and Routed channel type values", () => {
-    const constants = new Map(
-      (program.idl.constants ?? []).map((c) => [normalize(c.name), c.value])
+    const constants = new Map<string, string>(
+      (program.idl.constants ?? []).map((c): [string, string] => [
+        normalize(c.name),
+        c.value,
+      ])
     );
     expect(constants.get(normalize("CHANNEL_KIND_DIRECT"))).to.equal("1");
     expect(constants.get(normalize("CHANNEL_KIND_ROUTED"))).to.equal("2");
@@ -59,8 +62,13 @@ describe("ryvo_protocol / step 0: toolchain", () => {
   it("declares no account type without reserved growth room", () => {
     // Every non-singleton account must carry reserved bytes so a v2 field addition never
     // forces a realloc of accounts already holding live funds.
-    const accounts = program.idl.types.filter((t) =>
-      (program.idl.accounts ?? []).some((a) => a.name === t.name)
+    const accountNames = new Set(
+      ((program.idl.accounts ?? []) as readonly { name: string }[]).map(
+        (account) => account.name
+      )
+    );
+    const accounts = program.idl.types.filter((type) =>
+      accountNames.has(type.name)
     );
     // Exempt: the singleton config (checked in Rust); Arcium's own signer PDA (not ours to
     // shape); and the staging buffer, which is a per-batch scratch account that is closed for

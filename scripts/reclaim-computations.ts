@@ -9,12 +9,28 @@ import * as anchor from "@anchor-lang/core";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import * as fs from "fs";
 import * as os from "os";
-import { claimComputationRent, getComputationAccAddress } from "@arcium-hq/client";
+import {
+  claimComputationRent,
+  getComputationAccAddress,
+} from "@arcium-hq/client";
 
 (async () => {
-  const connection = new anchor.web3.Connection(process.env.ANCHOR_PROVIDER_URL!, "confirmed");
-  const payer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(fs.readFileSync(`${os.homedir()}/.config/solana/id.json`, "utf8"))));
-  const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(payer), { commitment: "confirmed" });
+  const connection = new anchor.web3.Connection(
+    process.env.ANCHOR_PROVIDER_URL!,
+    "confirmed"
+  );
+  const payer = Keypair.fromSecretKey(
+    new Uint8Array(
+      JSON.parse(
+        fs.readFileSync(`${os.homedir()}/.config/solana/id.json`, "utf8")
+      )
+    )
+  );
+  const provider = new anchor.AnchorProvider(
+    connection,
+    new anchor.Wallet(payer),
+    { commitment: "confirmed" }
+  );
   const clusterOffset = Number(process.env.ARCIUM_CLUSTER_OFFSET ?? 456);
   const programId = new PublicKey(
     process.env.RYVO_PROGRAM_ID ??
@@ -24,15 +40,27 @@ import { claimComputationRent, getComputationAccAddress } from "@arcium-hq/clien
   const sigs: string[] = [];
   let before: string | undefined;
   while (sigs.length < max) {
-    const page = await connection.getSignaturesForAddress(payer.publicKey, { before, limit: Math.min(1000, max - sigs.length) });
+    const page = await connection.getSignaturesForAddress(payer.publicKey, {
+      before,
+      limit: Math.min(1000, max - sigs.length),
+    });
     if (!page.length) break;
     sigs.push(...page.map((p) => p.signature));
     before = page[page.length - 1].signature;
   }
   const start = await connection.getBalance(payer.publicKey);
-  let found = 0, claimed = 0, kept = 0;
+  let found = 0,
+    claimed = 0,
+    kept = 0;
   for (let i = 0; i < sigs.length; i += 20) {
-    const txs = await Promise.all(sigs.slice(i, i + 20).map((s) => connection.getTransaction(s, { maxSupportedTransactionVersion: 0, commitment: "confirmed" })));
+    const txs = await Promise.all(
+      sigs.slice(i, i + 20).map((s) =>
+        connection.getTransaction(s, {
+          maxSupportedTransactionVersion: 0,
+          commitment: "confirmed",
+        })
+      )
+    );
     for (const tx of txs) {
       if (!tx?.meta || tx.meta.err) continue;
       const logs = tx.meta.logMessages ?? [];
@@ -53,11 +81,18 @@ import { claimComputationRent, getComputationAccAddress } from "@arcium-hq/clien
           console.log(`claimed ${comp.toBase58()} (${info.lamports} lamports)`);
         } catch (e: any) {
           kept++;
-          console.log(`kept ${comp.toBase58()}: ${String(e?.message).slice(0, 120)}`);
+          console.log(
+            `kept ${comp.toBase58()}: ${String(e?.message).slice(0, 120)}`
+          );
         }
       }
     }
   }
   const end = await connection.getBalance(payer.publicKey);
-  console.log(`${found} live computation accounts, ${claimed} claimed, ${kept} kept; wallet ${((end - start) / 1e9).toFixed(6)} SOL net (${end / 1e9} SOL)`);
+  console.log(
+    `${found} live computation accounts, ${claimed} claimed, ${kept} kept; wallet ${(
+      (end - start) /
+      1e9
+    ).toFixed(6)} SOL net (${end / 1e9} SOL)`
+  );
 })();

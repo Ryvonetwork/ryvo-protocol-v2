@@ -1,11 +1,15 @@
 {
   "license": "ISC",
   "scripts": {
-    "build": "anchor build",
+    "build": "arcium build",
     "test": "bash scripts/test.sh",
+    "test:arcium": "RYVO_UPLOAD_CIRCUITS=1 arcium test --skip-build",
     "finalize:program": "bash scripts/finalize-program.sh",
-    "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "format": "prettier --write \"{migrations,scripts,tests,tests-arcium}/**/*.{js,ts}\" \"*.{json,yml,yaml}\" \".github/**/*.{yml,yaml}\"",
+    "lint": "prettier --check \"{migrations,scripts,tests,tests-arcium}/**/*.{js,ts}\" \"*.{json,yml,yaml}\" \".github/**/*.{yml,yaml}\"",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint",
+    "audit:deps": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
     "@arcium-hq/client": "0.14.1",

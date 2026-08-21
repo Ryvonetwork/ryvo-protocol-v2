@@ -30,7 +30,7 @@ describe("ryvo_protocol / step 5: participants", () => {
     );
     return program.methods
       .initializeParticipant(signer)
-      .accounts({
+      .accountsPartial({
         owner: owner.publicKey,
         config: configPda,
         participant: seeds.participant(program.programId, owner.publicKey),
@@ -72,7 +72,7 @@ describe("ryvo_protocol / step 5: participants", () => {
     await expectReject(
       program.methods
         .initializeParticipant(anchor.web3.PublicKey.default)
-        .accounts({
+        .accountsPartial({
           owner: owner.publicKey,
           config: configPda,
           participant: seeds.participant(program.programId, owner.publicKey),
